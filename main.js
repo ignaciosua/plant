@@ -2283,9 +2283,11 @@ class PlantSimulator {
       .clone()
       .applyQuaternion(inverseBaseQuaternion)
       .normalize();
-    const swayAmplitudeBase = (0.004 + depth * 0.0035) * (0.8 + this.rng() * 0.6);
+    const swayAmplitudeBase = (0.008 + depth * 0.0052) * (0.85 + this.rng() * 0.6);
+    const parentSwayAmplitude = parentSegment ? parentSegment.swayAmplitude || 0 : 0;
+    const inheritedSway = parentSwayAmplitude * (0.9 + this.rng() * 0.22);
     const swayAmplitude = parentSegment
-      ? parentSegment.swayAmplitude * (0.86 + this.rng() * 0.16)
+      ? Math.max(swayAmplitudeBase * 0.68, inheritedSway)
       : swayAmplitudeBase;
     const swayPhase = parentSegment
       ? parentSegment.swayPhase + (this.rng() - 0.5) * 0.38
@@ -2922,13 +2924,16 @@ class PlantSimulator {
     }
     const lifecycleElapsedSeconds = Math.max(0, elapsedSeconds - this._lifecycleStartTime);
 
-    this.group.rotation.y = Math.sin(elapsedSeconds * 0.4) * 0.028 * windStrength;
-    this.group.position.x = Math.sin(elapsedSeconds * 0.35) * 0.013 * windStrength;
+    // Mantener tronco estable: sin rotación/traslación global por viento.
+    // El aleteo se aplica solo en ramas finales más adelante.
+    this.group.rotation.y = 0;
+    this.group.position.x = 0;
     const structuralCorrectionWeight = smooth01((0.985 - age) / 0.32);
     const structuralCorrectionsEnabled = structuralCorrectionWeight > 0.0005;
 
     for (let i = 0; i < this.segments.length; i += 1) {
       this.segments[i].runtimeLeafLoad = 0;
+      this.segments[i].runtimeDirectLeafLoad = 0;
     }
     for (let i = 0; i < this.leaves.length; i += 1) {
       const leaf = this.leaves[i];
@@ -2943,6 +2948,7 @@ class PlantSimulator {
       const scaleY = leaf.finalScale?.y || 0.25;
       const leafLoad = growthWeight * THREE.MathUtils.clamp(scaleX * scaleY * 2.9, 0.04, 1.2);
       leaf.anchorSegment.runtimeLeafLoad += leafLoad;
+      leaf.anchorSegment.runtimeDirectLeafLoad += leafLoad;
     }
     for (let i = this.segments.length - 1; i >= 0; i -= 1) {
       const segment = this.segments[i];
@@ -3094,18 +3100,63 @@ class PlantSimulator {
         }
       }
 
-      // Solo aplicar sway (movimiento por viento) a ramas, no al tronco principal
+      // Aplicar sway solo en ramas finales/tips para evitar "rotación" del tronco.
       if (segment.depth !== 0) {
-        const swayAmount =
-          Math.sin(elapsedSeconds * 0.92 + segment.swayPhase) *
-          segment.swayAmplitude *
-          windStrength *
-          (0.45 + segment.depth * 0.2) *
-          growth;
+        const maxDepth = Math.max(1, this.settings.maxDepth);
+        const depthNorm = THREE.MathUtils.clamp(segment.depth / maxDepth, 0, 1);
+        const isTerminalBranch = !segment.children || segment.children.length === 0;
+        const isNearCanopy = segment.depth >= maxDepth - 1;
+        const topologyBoost = isTerminalBranch ? 1.45 : isNearCanopy ? 0.92 : 0.36;
+        const tipAttenuation = Math.pow(depthNorm, 1.75);
+        const trunkAttenuation = THREE.MathUtils.lerp(
+          0.04,
+          1,
+          Math.pow(depthNorm, 2.2),
+        );
+        const directLeafMask = THREE.MathUtils.clamp(
+          (segment.runtimeDirectLeafLoad || 0) * 1.8,
+          0,
+          1,
+        );
+        const supportLeafMask = THREE.MathUtils.clamp(
+          (segment.runtimeLeafLoad || 0) * 0.42,
+          0,
+          0.55,
+        );
+        const tipDrivenMask = THREE.MathUtils.clamp(
+          tipAttenuation * topologyBoost,
+          0,
+          1.9,
+        );
+        const leafDrivenMask = THREE.MathUtils.clamp(
+          (directLeafMask * 1.0 + supportLeafMask * 0.55) *
+            (0.28 + tipAttenuation * 0.9),
+          0,
+          1.2,
+        );
+        const terminalMinMask = isTerminalBranch
+          ? THREE.MathUtils.lerp(0, 0.2, smooth01((depthNorm - 0.45) / 0.45))
+          : 0;
+        const swayMask = Math.max(
+          Math.max(tipDrivenMask, leafDrivenMask) * trunkAttenuation,
+          terminalMinMask,
+        );
 
-        swayQuatA.setFromAxisAngle(AXIS_Z, swayAmount);
-        swayQuatB.setFromAxisAngle(AXIS_X, swayAmount * 0.55);
-        segment.pivot.quaternion.multiply(swayQuatA).multiply(swayQuatB);
+        if (swayMask > 0.004) {
+          const windResponse = windStrength * (0.32 + windStrength * 1.28);
+          const depthGain = 0.68 + depthNorm * 0.44;
+          const swayAmount =
+            Math.sin(elapsedSeconds * 0.92 + segment.swayPhase) *
+            segment.swayAmplitude *
+            windResponse *
+            depthGain *
+            swayMask *
+            growth;
+
+          swayQuatA.setFromAxisAngle(AXIS_Z, swayAmount);
+          swayQuatB.setFromAxisAngle(AXIS_X, swayAmount * 0.55);
+          segment.pivot.quaternion.multiply(swayQuatA).multiply(swayQuatB);
+        }
       }
 
       segment.currentBaseRadius = currentBaseRadius;
