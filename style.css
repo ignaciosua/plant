@@ -85,6 +85,29 @@ h1 {
   color: var(--ink-soft);
 }
 
+.status {
+  margin: -0.05rem 0 0.58rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  color: #536459;
+}
+
+.status[data-state="ready"] {
+  color: #2b6b4a;
+}
+
+.status[data-state="loading"] {
+  color: #6d5f37;
+}
+
+.status[data-state="off"] {
+  color: #5d5f6f;
+}
+
+.status[data-state="fallback"] {
+  color: #7a4639;
+}
+
 .control {
   display: grid;
   grid-template-columns: 1fr auto;

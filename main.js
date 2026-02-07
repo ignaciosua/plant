@@ -1,5 +1,6 @@
 import * as THREE from "https://unpkg.com/three@0.160.1/build/three.module.js";
 import { OrbitControls } from "https://unpkg.com/three@0.160.1/examples/jsm/controls/OrbitControls.js";
+import { AmmoPhysicsEngine } from "./physics.js";
 
 const AXIS_X = new THREE.Vector3(1, 0, 0);
 const AXIS_Z = new THREE.Vector3(0, 0, 1);
@@ -219,6 +220,7 @@ function createGround() {
     metalness: 0,
   });
   const pebbles = new THREE.InstancedMesh(pebbleGeometry, pebbleMaterial, 26);
+  const pebbleColliders = [];
   const matrix = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
   const scale = new THREE.Vector3();
@@ -233,10 +235,37 @@ function createGround() {
     scale.set(s, s * (0.6 + Math.random() * 0.5), s);
     matrix.compose(posVec, quat, scale);
     pebbles.setMatrixAt(i, matrix);
+
+    const baseRadius = 0.05;
+    pebbleColliders.push({
+      type: "box",
+      center: {
+        x: posVec.x,
+        y: posVec.y,
+        z: posVec.z,
+      },
+      halfExtents: {
+        x: baseRadius * scale.x,
+        y: baseRadius * scale.y,
+        z: baseRadius * scale.z,
+      },
+      quaternion: {
+        x: quat.x,
+        y: quat.y,
+        z: quat.z,
+        w: quat.w,
+      },
+      friction: 0.94,
+      restitution: 0.02,
+    });
   }
   pebbles.castShadow = true;
   pebbles.receiveShadow = true;
   scene.add(pebbles);
+
+  return {
+    pebbleColliders,
+  };
 }
 
 function createAtmosphereParticles() {
@@ -264,8 +293,379 @@ function createAtmosphereParticles() {
 }
 
 createSkyDome();
-createGround();
+const groundData = createGround();
+const staticPebbleColliders =
+  groundData && Array.isArray(groundData.pebbleColliders)
+    ? groundData.pebbleColliders
+    : [];
 const atmosphereParticles = createAtmosphereParticles();
+
+class PhysicsDebugOverlay {
+  constructor(sceneRef) {
+    this.scene = sceneRef;
+    this.enabled = false;
+    this.group = new THREE.Group();
+    this.group.name = "physics-debug";
+    this.group.visible = false;
+    this.scene.add(this.group);
+
+    this.boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+    this.cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 14, 1, true);
+    this.sphereGeometry = new THREE.SphereGeometry(1, 12, 10);
+    this.leafGeometry = createLeafGeometry();
+
+    this.staticBoxMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff5f5f,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+    });
+    this.staticCylinderMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff9c4f,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.26,
+      depthWrite: false,
+    });
+    this.staticSurfaceMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff8b6f,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.24,
+      depthWrite: false,
+    });
+    this.plantMaterial = new THREE.MeshBasicMaterial({
+      color: 0x4ec6ff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.32,
+      depthWrite: false,
+    });
+    this.dynamicLeafMaterial = new THREE.MeshBasicMaterial({
+      color: 0x5ff285,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+    });
+    this.dynamicBoxMaterial = new THREE.MeshBasicMaterial({
+      color: 0x93e272,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+    });
+    this.dynamicSphereMaterial = new THREE.MeshBasicMaterial({
+      color: 0x6fe7a9,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+    });
+
+    this.staticGroup = null;
+    this.staticColliderCount = -1;
+    this.plantSphereLayer = null;
+    this.plantCylinderLayer = null;
+    this.dynamicLeafLayer = null;
+    this.dynamicBoxLayer = null;
+    this.dynamicSphereLayer = null;
+
+    this.tmpMatrix = new THREE.Matrix4();
+    this.tmpQuat = new THREE.Quaternion();
+    this.tmpPos = new THREE.Vector3();
+    this.tmpScale = new THREE.Vector3();
+    this.tmpOffset = new THREE.Vector3();
+  }
+
+  setEnabled(nextEnabled) {
+    this.enabled = Boolean(nextEnabled);
+    this.group.visible = this.enabled;
+    if (!this.enabled) {
+      this._syncInstancedLayer("plantSphereLayer", [], this.sphereGeometry, this.plantMaterial);
+      this._syncInstancedLayer("plantCylinderLayer", [], this.cylinderGeometry, this.plantMaterial, true);
+      this._syncInstancedLayer("dynamicLeafLayer", [], this.leafGeometry, this.dynamicLeafMaterial, true);
+      this._syncInstancedLayer("dynamicBoxLayer", [], this.boxGeometry, this.dynamicBoxMaterial, true);
+      this._syncInstancedLayer("dynamicSphereLayer", [], this.sphereGeometry, this.dynamicSphereMaterial);
+    }
+  }
+
+  _disposeInstanced(layer) {
+    if (!layer) {
+      return;
+    }
+    this.group.remove(layer.mesh);
+    layer.mesh.dispose();
+  }
+
+  _rebuildStatic(staticColliders) {
+    if (this.staticGroup) {
+      this.group.remove(this.staticGroup);
+      this.staticGroup.traverse((obj) => {
+        if (obj.isInstancedMesh && typeof obj.dispose === "function") {
+          obj.dispose();
+        } else if (obj.isMesh && obj.geometry) {
+          obj.geometry.dispose();
+        }
+      });
+    }
+
+    const staticGroup = new THREE.Group();
+    staticGroup.name = "physics-static-colliders";
+
+    const boxes = [];
+    const cylinders = [];
+    const heightfields = [];
+    for (let i = 0; i < staticColliders.length; i += 1) {
+      const collider = staticColliders[i];
+      if (collider.type === "box") {
+        boxes.push(collider);
+      } else if (collider.type === "cylinder") {
+        cylinders.push(collider);
+      } else if (collider.type === "heightfield") {
+        heightfields.push(collider);
+      }
+    }
+
+    if (boxes.length > 0) {
+      const mesh = new THREE.InstancedMesh(
+        this.boxGeometry,
+        this.staticBoxMaterial,
+        boxes.length,
+      );
+      mesh.frustumCulled = false;
+      for (let i = 0; i < boxes.length; i += 1) {
+        const collider = boxes[i];
+        this.tmpPos.set(
+          collider.center.x,
+          collider.center.y,
+          collider.center.z,
+        );
+        if (collider.quaternion) {
+          this.tmpQuat.set(
+            collider.quaternion.x,
+            collider.quaternion.y,
+            collider.quaternion.z,
+            collider.quaternion.w,
+          );
+        } else {
+          this.tmpQuat.identity();
+        }
+        this.tmpScale.set(
+          collider.halfExtents.x * 2,
+          collider.halfExtents.y * 2,
+          collider.halfExtents.z * 2,
+        );
+        this.tmpMatrix.compose(this.tmpPos, this.tmpQuat, this.tmpScale);
+        mesh.setMatrixAt(i, this.tmpMatrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      staticGroup.add(mesh);
+    }
+
+    if (cylinders.length > 0) {
+      const mesh = new THREE.InstancedMesh(
+        this.cylinderGeometry,
+        this.staticCylinderMaterial,
+        cylinders.length,
+      );
+      mesh.frustumCulled = false;
+      for (let i = 0; i < cylinders.length; i += 1) {
+        const collider = cylinders[i];
+        this.tmpPos.set(
+          collider.center.x,
+          collider.center.y,
+          collider.center.z,
+        );
+        this.tmpScale.set(
+          collider.radius * 2,
+          collider.height,
+          collider.radius * 2,
+        );
+        this.tmpMatrix.compose(this.tmpPos, this.tmpQuat.identity(), this.tmpScale);
+        mesh.setMatrixAt(i, this.tmpMatrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      staticGroup.add(mesh);
+    }
+
+    for (let i = 0; i < heightfields.length; i += 1) {
+      const collider = heightfields[i];
+      const resolution = Math.max(2, Math.floor(collider.resolution || 2));
+      const size = Math.max(0.1, Number(collider.size) || 14);
+      const heights = collider.heights || [];
+      const geometry = new THREE.PlaneGeometry(size, size, resolution, resolution);
+      const positions = geometry.attributes.position;
+      const expected = (resolution + 1) * (resolution + 1);
+      for (let v = 0; v < positions.count; v += 1) {
+        const h = v < expected ? Number(heights[v] || 0) : 0;
+        positions.setZ(v, h);
+      }
+      geometry.rotateX(-Math.PI / 2);
+      geometry.computeVertexNormals();
+      const mesh = new THREE.Mesh(geometry, this.staticSurfaceMaterial);
+      mesh.frustumCulled = false;
+      staticGroup.add(mesh);
+    }
+
+    this.group.add(staticGroup);
+    this.staticGroup = staticGroup;
+    this.staticColliderCount = staticColliders.length;
+  }
+
+  _syncInstancedLayer(layerKey, colliders, geometry, material, oriented = false) {
+    const current = this[layerKey];
+    if (colliders.length === 0) {
+      if (current) {
+        this._disposeInstanced(current);
+        this[layerKey] = null;
+      }
+      return;
+    }
+
+    let mesh = current ? current.mesh : null;
+    if (!mesh || mesh.count !== colliders.length) {
+      if (current) {
+        this._disposeInstanced(current);
+      }
+      mesh = new THREE.InstancedMesh(
+        geometry,
+        material,
+        colliders.length,
+      );
+      mesh.frustumCulled = false;
+      this.group.add(mesh);
+      this[layerKey] = { mesh };
+    }
+
+    for (let i = 0; i < colliders.length; i += 1) {
+      const collider = colliders[i];
+      this.tmpPos.set(collider.x, collider.y, collider.z);
+      if (oriented) {
+        if (collider.quaternion) {
+          this.tmpQuat.set(
+            collider.quaternion.x,
+            collider.quaternion.y,
+            collider.quaternion.z,
+            collider.quaternion.w,
+          );
+        } else {
+          this.tmpQuat.identity();
+        }
+        if (collider.scale) {
+          this.tmpScale.set(collider.scale.x, collider.scale.y, collider.scale.z);
+        } else {
+          const d = collider.radius * 2;
+          this.tmpScale.set(d, d, d);
+        }
+
+        if (collider.offset) {
+          this.tmpOffset.set(collider.offset.x, collider.offset.y, collider.offset.z);
+          this.tmpOffset.applyQuaternion(this.tmpQuat);
+          this.tmpPos.add(this.tmpOffset);
+        }
+      } else {
+        this.tmpQuat.identity();
+        const d = collider.radius * 2;
+        this.tmpScale.set(d, d, d);
+      }
+      this.tmpMatrix.compose(this.tmpPos, this.tmpQuat, this.tmpScale);
+      mesh.setMatrixAt(i, this.tmpMatrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  update(physicsEngine) {
+    if (!this.enabled) {
+      return;
+    }
+    if (!physicsEngine || !physicsEngine.ready) {
+      this._syncInstancedLayer("plantSphereLayer", [], this.sphereGeometry, this.plantMaterial);
+      this._syncInstancedLayer("plantCylinderLayer", [], this.cylinderGeometry, this.plantMaterial, true);
+      this._syncInstancedLayer("dynamicLeafLayer", [], this.leafGeometry, this.dynamicLeafMaterial, true);
+      this._syncInstancedLayer("dynamicBoxLayer", [], this.boxGeometry, this.dynamicBoxMaterial, true);
+      this._syncInstancedLayer("dynamicSphereLayer", [], this.sphereGeometry, this.dynamicSphereMaterial);
+      return;
+    }
+
+    const state = physicsEngine.getDebugState();
+    if (!state) {
+      return;
+    }
+
+    if (
+      !this.staticGroup ||
+      this.staticColliderCount !== state.static.length
+    ) {
+      this._rebuildStatic(state.static);
+    }
+
+    const plantSpheres = [];
+    const plantCylinders = [];
+    for (let i = 0; i < state.plant.length; i += 1) {
+      const collider = state.plant[i];
+      if (collider.type === "cylinder") {
+        plantCylinders.push(collider);
+      } else {
+        plantSpheres.push(collider);
+      }
+    }
+
+    const dynamicLeaves = [];
+    const dynamicBoxes = [];
+    const dynamicSpheres = [];
+    for (let i = 0; i < state.dynamic.length; i += 1) {
+      const collider = state.dynamic[i];
+      if (collider.kind === "leaf") {
+        dynamicLeaves.push(collider);
+      } else if (collider.kind === "box") {
+        dynamicBoxes.push(collider);
+      } else {
+        dynamicSpheres.push(collider);
+      }
+    }
+
+    this._syncInstancedLayer("plantSphereLayer", plantSpheres, this.sphereGeometry, this.plantMaterial);
+    this._syncInstancedLayer("plantCylinderLayer", plantCylinders, this.cylinderGeometry, this.plantMaterial, true);
+    this._syncInstancedLayer("dynamicLeafLayer", dynamicLeaves, this.leafGeometry, this.dynamicLeafMaterial, true);
+    this._syncInstancedLayer("dynamicBoxLayer", dynamicBoxes, this.boxGeometry, this.dynamicBoxMaterial, true);
+    this._syncInstancedLayer("dynamicSphereLayer", dynamicSpheres, this.sphereGeometry, this.dynamicSphereMaterial);
+  }
+
+  dispose() {
+    if (this.staticGroup) {
+      this.group.remove(this.staticGroup);
+      this.staticGroup.traverse((obj) => {
+        if (obj.isInstancedMesh && typeof obj.dispose === "function") {
+          obj.dispose();
+        } else if (obj.isMesh && obj.geometry) {
+          obj.geometry.dispose();
+        }
+      });
+      this.staticGroup = null;
+    }
+    this._syncInstancedLayer("plantSphereLayer", [], this.sphereGeometry, this.plantMaterial);
+    this._syncInstancedLayer("plantCylinderLayer", [], this.cylinderGeometry, this.plantMaterial, true);
+    this._syncInstancedLayer("dynamicLeafLayer", [], this.leafGeometry, this.dynamicLeafMaterial, true);
+    this._syncInstancedLayer("dynamicBoxLayer", [], this.boxGeometry, this.dynamicBoxMaterial, true);
+    this._syncInstancedLayer("dynamicSphereLayer", [], this.sphereGeometry, this.dynamicSphereMaterial);
+    this.boxGeometry.dispose();
+    this.cylinderGeometry.dispose();
+    this.sphereGeometry.dispose();
+    this.leafGeometry.dispose();
+    this.staticBoxMaterial.dispose();
+    this.staticCylinderMaterial.dispose();
+    this.staticSurfaceMaterial.dispose();
+    this.plantMaterial.dispose();
+    this.dynamicLeafMaterial.dispose();
+    this.dynamicBoxMaterial.dispose();
+    this.dynamicSphereMaterial.dispose();
+    this.scene.remove(this.group);
+  }
+}
+
+const physicsDebugOverlay = new PhysicsDebugOverlay(scene);
 
 function seededRandom(seed) {
   let state = seed >>> 0;
@@ -314,6 +714,7 @@ function createLeafGeometry() {
   }
   geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
   return geometry;
 }
 
@@ -339,6 +740,7 @@ class PlantSimulator {
     this.segmentBudget = Math.round(760 + this.settings.maxDepth * 115);
     this.segmentCount = 0;
     this.lastUpdateTime = null;
+    this.physics = settings.physics || null;
 
     this.segmentGeometry = new THREE.CylinderGeometry(
       CYLINDER_TOP_RADIUS,
@@ -1357,12 +1759,108 @@ class PlantSimulator {
       lifeOffset,
       groundRestHeight: 0.008 + this.rng() * 0.014,
       groundSinkDepth: 0.02 + this.rng() * 0.036,
+      collisionRadius: Math.max(
+        0.017,
+        (widthScale * 0.085) + (lengthScale * 0.11),
+      ),
+      physicsHandle: null,
+      physicsLockedScale: null,
     });
 
     // Check if this new leaf collides with any existing old leaf and trigger their fall
     this.triggerCollisionFalls(position, anchorSegment);
 
     return true;
+  }
+
+  releaseLeafPhysics(leaf) {
+    if (!leaf.physicsHandle || !this.physics || !this.physics.ready) {
+      leaf.physicsHandle = null;
+      leaf.physicsLockedScale = null;
+      return;
+    }
+
+    this.physics.removeLeafBody(leaf.physicsHandle);
+    leaf.physicsHandle = null;
+    leaf.physicsLockedScale = null;
+  }
+
+  spawnLeafPhysicsBody(
+    leaf,
+    leafBaseQuaternion,
+    leafFallWorld,
+    windStrength,
+    elapsedSeconds,
+    groupWorldQuaternion,
+  ) {
+    if (
+      !this.physics ||
+      !this.physics.ready ||
+      leaf.physicsHandle
+    ) {
+      return;
+    }
+
+    const startWorld = leaf.pivot.position.clone();
+    this.group.localToWorld(startWorld);
+
+    const worldQuaternion = groupWorldQuaternion
+      .clone()
+      .multiply(leafBaseQuaternion)
+      .multiply(leaf.mesh.quaternion)
+      .normalize();
+
+    const windVector = new THREE.Vector3(
+      Math.sin(elapsedSeconds * 0.43 + leaf.swayPhase),
+      0,
+      Math.cos(elapsedSeconds * 0.37 + leaf.swayPhase * 0.68),
+    ).normalize();
+
+    const initialVelocity = leafFallWorld
+      .clone()
+      .multiplyScalar(0.35 + leaf.fallDrift * 1.2)
+      .addScaledVector(windVector, leaf.fallWindDrift * windStrength * 1.2);
+    // Reducir velocidad vertical inicial para caída más lenta y realista
+    initialVelocity.y -= 0.08 + leaf.fallDistance * 0.12;
+
+    // Rotación más suave y realista como hojas que caen
+    const initialAngularVelocity = new THREE.Vector3(
+      (this.rng() - 0.5) * 1.2,
+      (leaf.fallRoll || 0) * 1.4,
+      (this.rng() - 0.5) * 1.2,
+    );
+
+    const areaHint = Math.max(
+      0.02,
+      (leaf.finalScale.x || 0.1) * (leaf.finalScale.y || 0.1),
+    );
+    const mass = THREE.MathUtils.clamp(
+      0.0024 + areaHint * 0.0065,
+      0.0024,
+      0.0078,
+    );
+
+    const lockedScale = {
+      x: Math.max(0.0002, leaf.mesh.scale.x),
+      y: Math.max(0.0002, leaf.mesh.scale.y),
+      z: Math.max(0.0002, leaf.mesh.scale.z),
+    };
+
+    const handle = this.physics.createLeafBody({
+      position: startWorld,
+      quaternion: worldQuaternion,
+      radius: leaf.collisionRadius,
+      mass,
+      initialVelocity,
+      initialAngularVelocity,
+      leafGeometry: this.leafGeometry,
+      leafScale: lockedScale,
+      windPhase: leaf.swayPhase,
+    });
+    leaf.physicsHandle = handle;
+    leaf.physicsLockedScale = handle
+      ? new THREE.Vector3(lockedScale.x, lockedScale.y, lockedScale.z)
+      : null;
   }
 
   computeLeafLifecycle(leaf, age, elapsedSeconds) {
@@ -1565,6 +2063,15 @@ class PlantSimulator {
     const leafEmissiveTint = new THREE.Color();
     const leafOrientationQuat = new THREE.Quaternion();
     const leafGroundQuat = new THREE.Quaternion();
+    const physicsPositionWorld = new THREE.Vector3();
+    const physicsVelocityWorld = new THREE.Vector3();
+    const physicsQuaternionWorld = new THREE.Quaternion();
+    const groupWorldQuaternion = new THREE.Quaternion();
+    const inverseGroupWorldQuaternion = new THREE.Quaternion();
+    const segmentColliderLocal = new THREE.Vector3();
+    const segmentColliderWorld = new THREE.Vector3();
+    const segmentColliderWorldQuaternion = new THREE.Quaternion();
+    const plantColliders = [];
     const deltaSeconds =
       this.lastUpdateTime === null
         ? 0
@@ -1607,6 +2114,7 @@ class PlantSimulator {
         grownLength,
         segment.finalRadius * radialGrowth,
       );
+      segment.currentLength = grownLength;
       segment.mesh.position.y = grownLength * segment.baseOffset;
 
       // Orientación por continuidad padre->hijo.
@@ -1648,6 +2156,65 @@ class PlantSimulator {
     }
 
     this.group.updateMatrixWorld();
+    this.group.getWorldQuaternion(groupWorldQuaternion);
+    inverseGroupWorldQuaternion.copy(groupWorldQuaternion).invert();
+
+    if (this.physics && this.physics.ready) {
+      plantColliders.length = 0;
+      for (let i = 0; i < this.segments.length; i += 1) {
+        const segment = this.segments[i];
+        if (segment.depth > 1) {
+          continue;
+        }
+
+        const segmentLength = segment.currentLength || 0;
+        if (segmentLength < 0.02) {
+          continue;
+        }
+
+        const colliderRadius =
+          Math.max(segment.currentTopRadius, segment.currentBaseRadius) *
+          (segment.depth === 0 ? 1.04 : 1.02);
+        if (colliderRadius < 0.01) {
+          continue;
+        }
+        const colliderHeight = Math.max(0.02, segmentLength * 0.98);
+
+        segmentColliderLocal
+          .set(0, segment.mesh.position.y + segmentLength * 0.5, 0)
+          .applyQuaternion(segment.pivot.quaternion)
+          .add(segment.pivot.position);
+        segmentColliderWorld
+          .copy(segmentColliderLocal)
+          .applyMatrix4(this.group.matrixWorld);
+        segmentColliderWorldQuaternion
+          .copy(groupWorldQuaternion)
+          .multiply(segment.pivot.quaternion)
+          .normalize();
+
+        plantColliders.push({
+          id: `seg-${i}`,
+          type: "cylinder",
+          x: segmentColliderWorld.x,
+          y: segmentColliderWorld.y,
+          z: segmentColliderWorld.z,
+          radius: colliderRadius,
+          height: colliderHeight,
+          quaternion: {
+            x: segmentColliderWorldQuaternion.x,
+            y: segmentColliderWorldQuaternion.y,
+            z: segmentColliderWorldQuaternion.z,
+            w: segmentColliderWorldQuaternion.w,
+          },
+        });
+      }
+
+      this.physics.syncPlantColliders(plantColliders);
+      this.physics.applyLeafAerodynamics(elapsedSeconds, windStrength);
+      if (deltaSeconds > 0) {
+        this.physics.step(deltaSeconds);
+      }
+    }
 
     // Runtime collision: detect overlapping visible leaves each frame
     // Throttle to every ~30 frames for performance
@@ -1667,21 +2234,33 @@ class PlantSimulator {
       );
     }
 
-    const hardConcurrentFallCap = 12;
+    const hardConcurrentFallCap = THREE.MathUtils.clamp(
+      Math.round(this.settings.maxConcurrentLeafFall ?? 12),
+      0,
+      15,
+    );
     const flowNoise =
       Math.sin(elapsedSeconds * 0.18 + this.settings.seed * 0.017) * 0.5 + 0.5;
-    let preferredConcurrentFalling =
-      1 + Math.floor(flowNoise * 3.999);
-    if (windStrength > 0.82) {
+    let preferredConcurrentFalling = 0;
+    if (hardConcurrentFallCap > 0) {
+      const preferredMin = Math.min(2, hardConcurrentFallCap);
+      preferredConcurrentFalling = Math.round(
+        THREE.MathUtils.lerp(preferredMin, hardConcurrentFallCap, flowNoise),
+      );
+    }
+    if (hardConcurrentFallCap > 0 && windStrength > 0.82) {
       const gustNoise =
         Math.sin(elapsedSeconds * 0.33 + this.settings.seed * 0.031) * 0.5 + 0.5;
       if (gustNoise > 0.7) {
-        preferredConcurrentFalling += 1;
+        preferredConcurrentFalling += Math.max(
+          1,
+          Math.round(hardConcurrentFallCap * 0.14),
+        );
       }
     }
     preferredConcurrentFalling = THREE.MathUtils.clamp(
       preferredConcurrentFalling,
-      1,
+      0,
       hardConcurrentFallCap,
     );
 
@@ -1851,6 +2430,9 @@ class PlantSimulator {
       }
 
       const detached = Math.max(fall, groundDecay);
+      let usedPhysicsTransform = false;
+      let physicsBodyState = null;
+
       if (detached > 0) {
         if (leaf.anchorSegment) {
           leafFallWorld
@@ -1860,7 +2442,57 @@ class PlantSimulator {
         } else {
           leafFallWorld.copy(leaf.fallDirectionLocal).normalize();
         }
+      } else if (leaf.physicsHandle) {
+        this.releaseLeafPhysics(leaf);
+      }
 
+      if (
+        detached > 0 &&
+        this.physics &&
+        this.physics.ready &&
+        leaf.isDetaching &&
+        !hidden
+      ) {
+        if (!leaf.physicsHandle && fall > 0.02) {
+          this.spawnLeafPhysicsBody(
+            leaf,
+            leafBaseQuaternion,
+            leafFallWorld,
+            windStrength,
+            elapsedSeconds,
+            groupWorldQuaternion,
+          );
+        }
+
+        if (leaf.physicsHandle) {
+          physicsBodyState = this.physics.readBodyState(
+            leaf.physicsHandle,
+            physicsPositionWorld,
+            physicsQuaternionWorld,
+            physicsVelocityWorld,
+          );
+
+          if (physicsBodyState) {
+            leafGroundLocal.copy(physicsPositionWorld);
+            this.group.worldToLocal(leafGroundLocal);
+            leaf.pivot.position.copy(leafGroundLocal);
+            leaf.pivot.quaternion
+              .copy(inverseGroupWorldQuaternion)
+              .multiply(physicsQuaternionWorld);
+            usedPhysicsTransform = true;
+
+            if (physicsBodyState.onGround) {
+              fall = Math.max(fall, 0.96);
+            }
+          } else {
+            this.releaseLeafPhysics(leaf);
+          }
+        }
+      } else if (leaf.physicsHandle) {
+        this.releaseLeafPhysics(leaf);
+      }
+
+      if (detached > 0 && !usedPhysicsTransform) {
         leafStartLocal.copy(leaf.pivot.position);
         leafStartWorld.copy(leafStartLocal).applyMatrix4(this.group.matrixWorld);
         leafLateral.copy(leafFallWorld);
@@ -1952,11 +2584,15 @@ class PlantSimulator {
 
       // Apply collision shrink factor for leaves still near neighbors
       const collisionShrink = leaf._collisionShrink ?? 1;
-      leaf.mesh.scale.set(
-        Math.max(0.0001, leaf.finalScale.x * renderedGrowth * collisionShrink),
-        Math.max(0.0001, leaf.finalScale.y * renderedGrowth * collisionShrink),
-        Math.max(0.0001, leaf.finalScale.z * renderedGrowth * collisionShrink),
-      );
+      let scaleX = Math.max(0.0001, leaf.finalScale.x * renderedGrowth * collisionShrink);
+      let scaleY = Math.max(0.0001, leaf.finalScale.y * renderedGrowth * collisionShrink);
+      let scaleZ = Math.max(0.0001, leaf.finalScale.z * renderedGrowth * collisionShrink);
+      if (usedPhysicsTransform && leaf.physicsLockedScale) {
+        scaleX = Math.max(0.0001, leaf.physicsLockedScale.x * scaleFade);
+        scaleY = Math.max(0.0001, leaf.physicsLockedScale.y * scaleFade);
+        scaleZ = Math.max(0.0001, leaf.physicsLockedScale.z * scaleFade);
+      }
+      leaf.mesh.scale.set(scaleX, scaleY, scaleZ);
       const bendX = -(
         (leaf.bendBase || 0) +
         (leaf.bendAvoid || 0) * growth +
@@ -1967,10 +2603,14 @@ class PlantSimulator {
       const bendZ = (leaf.fallRoll || 0) * (fall + groundDecay * 0.45);
       const groundFlatten = smooth01((groundDecay - 0.22) / 0.78);
       const restingX = leaf.groundFaceUp ? 0.03 : -0.03;
-      leaf.mesh.rotation.x = THREE.MathUtils.lerp(bendX, restingX, groundFlatten);
-      leaf.mesh.rotation.z = THREE.MathUtils.lerp(bendZ, 0, groundFlatten);
+      if (usedPhysicsTransform) {
+        leaf.mesh.rotation.set(0, 0, 0);
+      } else {
+        leaf.mesh.rotation.x = THREE.MathUtils.lerp(bendX, restingX, groundFlatten);
+        leaf.mesh.rotation.z = THREE.MathUtils.lerp(bendZ, 0, groundFlatten);
+      }
 
-      const attachment = 1 - detached;
+      const attachment = usedPhysicsTransform ? 0 : 1 - detached;
       const swayGrowth = growth * Math.max(0, attachment);
 
       const leafSway =
@@ -1990,26 +2630,30 @@ class PlantSimulator {
       swayQuatA.setFromAxisAngle(AXIS_Z, leafSway);
       swayQuatB.setFromAxisAngle(AXIS_X, leafSway * 0.45);
       swayQuatC.setFromAxisAngle(UP, leafTwist);
-      leafOrientationQuat.copy(leafBaseQuaternion);
+      if (usedPhysicsTransform) {
+        leafOrientationQuat.copy(leaf.pivot.quaternion);
+      } else {
+        leafOrientationQuat.copy(leafBaseQuaternion);
 
-      if (detached > 0) {
-        const tumbleMix = Math.max(0, 1 - groundDecay * 1.25);
-        swayQuatA.setFromAxisAngle(
-          leafFallWorld,
-          (leaf.fallRoll || 0) * fall * 0.62 * tumbleMix,
-        );
-        swayQuatB.setFromAxisAngle(AXIS_X, -0.42 * fall * tumbleMix);
-        leafOrientationQuat.multiply(swayQuatA).multiply(swayQuatB);
+        if (detached > 0) {
+          const tumbleMix = Math.max(0, 1 - groundDecay * 1.25);
+          swayQuatA.setFromAxisAngle(
+            leafFallWorld,
+            (leaf.fallRoll || 0) * fall * 0.62 * tumbleMix,
+          );
+          swayQuatB.setFromAxisAngle(AXIS_X, -0.42 * fall * tumbleMix);
+          leafOrientationQuat.multiply(swayQuatA).multiply(swayQuatB);
 
-        leafGroundQuat.setFromUnitVectors(AXIS_Z, leaf.groundFaceUp ? UP : DOWN);
-        swayQuatA.setFromAxisAngle(UP, leaf.groundYaw);
-        swayQuatB.setFromAxisAngle(AXIS_X, leaf.groundTiltX || 0);
-        swayQuatC.setFromAxisAngle(AXIS_Z, leaf.groundTiltZ || 0);
-        leafGroundQuat.multiply(swayQuatA).multiply(swayQuatB).multiply(swayQuatC);
+          leafGroundQuat.setFromUnitVectors(AXIS_Z, leaf.groundFaceUp ? UP : DOWN);
+          swayQuatA.setFromAxisAngle(UP, leaf.groundYaw);
+          swayQuatB.setFromAxisAngle(AXIS_X, leaf.groundTiltX || 0);
+          swayQuatC.setFromAxisAngle(AXIS_Z, leaf.groundTiltZ || 0);
+          leafGroundQuat.multiply(swayQuatA).multiply(swayQuatB).multiply(swayQuatC);
 
-        const settle =
-          smooth01((fall - 0.8) / 0.2) + smooth01(groundDecay) * 0.95;
-        leafOrientationQuat.slerp(leafGroundQuat, THREE.MathUtils.clamp(settle, 0, 1));
+          const settle =
+            smooth01((fall - 0.8) / 0.2) + smooth01(groundDecay) * 0.95;
+          leafOrientationQuat.slerp(leafGroundQuat, THREE.MathUtils.clamp(settle, 0, 1));
+        }
       }
 
       swayQuatA.setFromAxisAngle(AXIS_Z, leafSway);
@@ -2026,10 +2670,14 @@ class PlantSimulator {
 
   dispose() {
     this.scene.remove(this.group);
+    if (this.physics && this.physics.ready) {
+      this.physics.clearPlantColliders();
+    }
     this.segmentGeometry.dispose();
     this.leafGeometry.dispose();
     this.stemMaterial.dispose();
     for (let i = 0; i < this.leaves.length; i += 1) {
+      this.releaseLeafPhysics(this.leaves[i]);
       this.leaves[i].mesh.material.dispose();
     }
     this.leafMaterial.dispose();
@@ -2044,6 +2692,11 @@ const ui = {
   growthSpeedValue: document.getElementById("growthSpeedValue"),
   wind: document.getElementById("wind"),
   windValue: document.getElementById("windValue"),
+  fallingLeaves: document.getElementById("fallingLeaves"),
+  fallingLeavesValue: document.getElementById("fallingLeavesValue"),
+  physics: document.getElementById("physics"),
+  physicsDebug: document.getElementById("physicsDebug"),
+  physicsStatus: document.getElementById("physicsStatus"),
   branching: document.getElementById("branching"),
   branchingValue: document.getElementById("branchingValue"),
   leafDensity: document.getElementById("leafDensity"),
@@ -2060,6 +2713,9 @@ const state = {
   autoGrow: true,
   growthSpeed: Number(ui.growthSpeed.value),
   windStrength: Number(ui.wind.value),
+  maxConcurrentLeafFall: Number(ui.fallingLeaves.value),
+  physicsEnabled: Boolean(ui.physics.checked),
+  showPhysicsColliders: Boolean(ui.physicsDebug.checked),
   branching: Number(ui.branching.value),
   leafDensity: Number(ui.leafDensity.value),
   maxDepth: Number(ui.depth.value),
@@ -2067,11 +2723,82 @@ const state = {
 };
 
 let plant = null;
+let physicsEngine = null;
+const physicsState = {
+  loading: false,
+  ready: false,
+  error: null,
+};
+
+function refreshPhysicsStatus() {
+  if (!ui.physicsStatus) {
+    return;
+  }
+
+  if (physicsState.error) {
+    ui.physicsStatus.textContent = "Ammo.js: unavailable (fallback analytic)";
+    ui.physicsStatus.dataset.state = "fallback";
+    return;
+  }
+
+  if (physicsState.loading) {
+    ui.physicsStatus.textContent = "Ammo.js: loading...";
+    ui.physicsStatus.dataset.state = "loading";
+    return;
+  }
+
+  if (physicsState.ready && state.physicsEnabled) {
+    ui.physicsStatus.textContent = "Ammo.js: active";
+    ui.physicsStatus.dataset.state = "ready";
+    return;
+  }
+
+  if (physicsState.ready && !state.physicsEnabled) {
+    ui.physicsStatus.textContent = "Ammo.js: loaded (off)";
+    ui.physicsStatus.dataset.state = "off";
+    return;
+  }
+
+  ui.physicsStatus.textContent = "Ammo.js: not initialized";
+  ui.physicsStatus.dataset.state = "off";
+}
+
+async function initializePhysics() {
+  physicsState.loading = true;
+  physicsState.error = null;
+  refreshPhysicsStatus();
+
+  try {
+    const engine = new AmmoPhysicsEngine({
+      sampleHeightAt: sampleSurfaceHeightAt,
+      extraStaticColliders: staticPebbleColliders,
+    });
+    await engine.init();
+    physicsEngine = engine;
+    physicsState.loading = false;
+    physicsState.ready = true;
+    refreshPhysicsStatus();
+
+    if (state.physicsEnabled) {
+      rebuildPlant();
+    }
+  } catch (error) {
+    physicsState.loading = false;
+    physicsState.ready = false;
+    physicsState.error = error;
+    state.physicsEnabled = false;
+    ui.physics.checked = false;
+    ui.physics.disabled = true;
+    refreshPhysicsStatus();
+    console.warn("Ammo.js failed to initialize, using analytic fallback.", error);
+  }
+}
 
 function syncOutputs() {
   ui.growthValue.textContent = Number(state.age).toFixed(3);
   ui.growthSpeedValue.textContent = state.growthSpeed.toFixed(2);
   ui.windValue.textContent = state.windStrength.toFixed(2);
+  ui.fallingLeavesValue.textContent = String(state.maxConcurrentLeafFall);
   ui.branchingValue.textContent = state.branching.toFixed(2);
   ui.leafDensityValue.textContent = state.leafDensity.toFixed(2);
   ui.depthValue.textContent = String(state.maxDepth);
@@ -2082,11 +2809,18 @@ function rebuildPlant() {
     plant.dispose();
   }
 
+  const activePhysics =
+    state.physicsEnabled && physicsEngine && physicsState.ready
+      ? physicsEngine
+      : null;
+
   plant = new PlantSimulator(scene, {
     seed: state.seed,
     branching: state.branching,
     leafDensity: state.leafDensity,
     maxDepth: state.maxDepth,
+    maxConcurrentLeafFall: state.maxConcurrentLeafFall,
+    physics: activePhysics,
   });
 }
 
@@ -2114,6 +2848,28 @@ ui.growthSpeed.addEventListener("input", () => {
 ui.wind.addEventListener("input", () => {
   state.windStrength = Number(ui.wind.value);
   syncOutputs();
+});
+
+ui.fallingLeaves.addEventListener("input", () => {
+  state.maxConcurrentLeafFall = Math.max(
+    0,
+    Math.min(15, Math.round(Number(ui.fallingLeaves.value))),
+  );
+  if (plant) {
+    plant.settings.maxConcurrentLeafFall = state.maxConcurrentLeafFall;
+  }
+  syncOutputs();
+});
+
+ui.physics.addEventListener("change", () => {
+  state.physicsEnabled = ui.physics.checked;
+  refreshPhysicsStatus();
+  rebuildPlant();
+});
+
+ui.physicsDebug.addEventListener("change", () => {
+  state.showPhysicsColliders = ui.physicsDebug.checked;
+  physicsDebugOverlay.setEnabled(state.showPhysicsColliders);
 });
 
 ui.branching.addEventListener("input", () => {
@@ -2164,7 +2920,10 @@ for (let i = 0; i < structuralControls.length; i += 1) {
 }
 
 syncOutputs();
+refreshPhysicsStatus();
+physicsDebugOverlay.setEnabled(state.showPhysicsColliders);
 rebuildPlant();
+initializePhysics();
 
 const clock = new THREE.Clock();
 
@@ -2192,6 +2951,8 @@ function animate() {
     atmosphereParticles.position.y = Math.sin(elapsed * 0.15) * 0.04;
   }
 
+  physicsDebugOverlay.update(physicsEngine);
+
   controls.update();
   renderer.render(scene, camera);
 }
@@ -2203,4 +2964,16 @@ window.addEventListener("resize", () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+window.addEventListener("beforeunload", () => {
+  physicsDebugOverlay.dispose();
+  if (plant) {
+    plant.dispose();
+    plant = null;
+  }
+  if (physicsEngine) {
+    physicsEngine.dispose();
+    physicsEngine = null;
+  }
 });
