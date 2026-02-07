@@ -16,6 +16,101 @@ const LEAF_TINT_BROWN = new THREE.Color(0x6d4a2b);
 const LEAF_EMISSIVE_FRESH = new THREE.Color(0x0f2716);
 const LEAF_EMISSIVE_DRY = new THREE.Color(0x2f1e10);
 
+function fract(value) {
+  return value - Math.floor(value);
+}
+
+function noiseHash2(x, y, seed = 0) {
+  return fract(Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453123);
+}
+
+function noise2(x, y, seed = 0) {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+
+  const n00 = noiseHash2(ix, iy, seed);
+  const n10 = noiseHash2(ix + 1, iy, seed);
+  const n01 = noiseHash2(ix, iy + 1, seed);
+  const n11 = noiseHash2(ix + 1, iy + 1, seed);
+  const nx0 = THREE.MathUtils.lerp(n00, n10, ux);
+  const nx1 = THREE.MathUtils.lerp(n01, n11, ux);
+  return THREE.MathUtils.lerp(nx0, nx1, uy);
+}
+
+function fbm2(x, y, seed = 0, octaves = 4) {
+  let value = 0;
+  let amplitude = 0.5;
+  let frequency = 1;
+  let sum = 0;
+  for (let i = 0; i < octaves; i += 1) {
+    value += noise2(x * frequency, y * frequency, seed + i * 19.37) * amplitude;
+    sum += amplitude;
+    frequency *= 2;
+    amplitude *= 0.5;
+  }
+  return sum > 0 ? value / sum : 0;
+}
+
+function clampByte(value) {
+  return Math.round(THREE.MathUtils.clamp(value, 0, 255));
+}
+
+function createProceduralTexture(
+  rendererRef,
+  size,
+  {
+    repeatX = 1,
+    repeatY = 1,
+    anisotropy = 8,
+    colorSpace = null,
+  } = {},
+  sampler,
+) {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  const image = context.createImageData(size, size);
+  const data = image.data;
+
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const u = x / size;
+      const v = y / size;
+      const index = (y * size + x) * 4;
+      const pixel = sampler(u, v, x, y);
+      data[index] = clampByte(pixel.r);
+      data[index + 1] = clampByte(pixel.g);
+      data[index + 2] = clampByte(pixel.b);
+      data[index + 3] = clampByte(
+        Number.isFinite(pixel.a) ? pixel.a : 255,
+      );
+    }
+  }
+
+  context.putImageData(image, 0, 0);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeatX, repeatY);
+  const maxAnisotropy =
+    rendererRef &&
+    rendererRef.capabilities &&
+    typeof rendererRef.capabilities.getMaxAnisotropy === "function"
+      ? rendererRef.capabilities.getMaxAnisotropy()
+      : 1;
+  texture.anisotropy = Math.max(1, Math.min(maxAnisotropy, anisotropy));
+  if (colorSpace) {
+    texture.colorSpace = colorSpace;
+  }
+  texture.needsUpdate = true;
+  return texture;
+}
+
 function sampleGroundHeightAt(x, z) {
   const dist = Math.sqrt(x * x + z * z);
   const baseWaves =
@@ -102,6 +197,194 @@ const fillLight = new THREE.DirectionalLight(0xc8dcff, 0.46);
 fillLight.position.set(-2.5, 3.4, 4.8);
 scene.add(fillLight);
 
+function createVisualTextures(rendererRef) {
+  const groundMap = createProceduralTexture(
+    rendererRef,
+    512,
+    {
+      repeatX: 8,
+      repeatY: 8,
+      anisotropy: 12,
+      colorSpace: THREE.SRGBColorSpace,
+    },
+    (u, v) => {
+      const broad = fbm2(u * 4.2, v * 4.2, 7, 4);
+      const detail = fbm2(u * 26, v * 26, 13, 3);
+      const moss = smooth01((broad - 0.56) / 0.28);
+      const base = 86 + broad * 40;
+      const r = base - 14 + detail * 14 + moss * 10;
+      const g = base + 17 + detail * 16 + moss * 28;
+      const b = base - 10 + detail * 12 - moss * 4;
+      return { r, g, b, a: 255 };
+    },
+  );
+
+  const groundRoughnessMap = createProceduralTexture(
+    rendererRef,
+    256,
+    {
+      repeatX: 8,
+      repeatY: 8,
+      anisotropy: 8,
+    },
+    (u, v) => {
+      const roughNoise = fbm2(u * 22, v * 22, 29, 3);
+      const rough = 190 + roughNoise * 55;
+      return { r: rough, g: rough, b: rough, a: 255 };
+    },
+  );
+
+  const soilMap = createProceduralTexture(
+    rendererRef,
+    384,
+    {
+      repeatX: 3,
+      repeatY: 2,
+      anisotropy: 10,
+      colorSpace: THREE.SRGBColorSpace,
+    },
+    (u, v) => {
+      const broad = fbm2(u * 6.4, v * 5.1, 41, 4);
+      const grit = fbm2(u * 34, v * 28, 53, 3);
+      const base = 62 + broad * 52;
+      const r = base + 18 + grit * 18;
+      const g = base + 5 + grit * 10;
+      const b = base - 8 + grit * 8;
+      return { r, g, b, a: 255 };
+    },
+  );
+
+  const pebbleMap = createProceduralTexture(
+    rendererRef,
+    256,
+    {
+      repeatX: 2,
+      repeatY: 2,
+      anisotropy: 6,
+      colorSpace: THREE.SRGBColorSpace,
+    },
+    (u, v) => {
+      const n = fbm2(u * 12, v * 12, 67, 4);
+      const p = fbm2(u * 44, v * 44, 73, 2);
+      const base = 118 + n * 52;
+      const r = base + p * 8;
+      const g = base + p * 6;
+      const b = base - 6 + p * 5;
+      return { r, g, b, a: 255 };
+    },
+  );
+
+  const barkMap = createProceduralTexture(
+    rendererRef,
+    512,
+    {
+      repeatX: 2.3,
+      repeatY: 5.8,
+      anisotropy: 10,
+      colorSpace: THREE.SRGBColorSpace,
+    },
+    (u, v) => {
+      const waviness = fbm2(v * 4.5, u * 2.2, 89, 3) * 0.08;
+      const stripe = Math.abs(Math.sin((u + waviness) * 62));
+      const grain = fbm2(u * 42, v * 12, 97, 4);
+      const base = 58 + grain * 64 - stripe * 18;
+      const r = base + 21;
+      const g = base + 12;
+      const b = base + 2;
+      return { r, g, b, a: 255 };
+    },
+  );
+
+  const leafMap = createProceduralTexture(
+    rendererRef,
+    512,
+    {
+      repeatX: 1,
+      repeatY: 1,
+      anisotropy: 8,
+      colorSpace: THREE.SRGBColorSpace,
+    },
+    (u, v) => {
+      const center = 1 - Math.min(1, Math.abs(u - 0.5) * 2);
+      const veinMain = Math.exp(-Math.pow((u - 0.5) * 18, 2));
+      const sideVeins = Math.max(0, Math.sin(v * 38 + (u - 0.5) * 32));
+      const mottling = fbm2(u * 20, v * 26, 113, 3);
+      const base = 178 + v * 44 + mottling * 24;
+      const r = base + 4 + veinMain * 16;
+      const g = base + 18 + veinMain * 26 + sideVeins * center * 8;
+      const b = base - 24 + veinMain * 10;
+      return { r, g, b, a: 255 };
+    },
+  );
+
+  const textures = [
+    groundMap,
+    groundRoughnessMap,
+    soilMap,
+    pebbleMap,
+    barkMap,
+    leafMap,
+  ];
+
+  return {
+    groundMap,
+    groundRoughnessMap,
+    soilMap,
+    pebbleMap,
+    barkMap,
+    leafMap,
+    dispose() {
+      for (let i = 0; i < textures.length; i += 1) {
+        textures[i].dispose();
+      }
+    },
+  };
+}
+
+function createGroundContactShadow(sceneRef) {
+  const shadowTexture = createProceduralTexture(
+    renderer,
+    256,
+    {
+      repeatX: 1,
+      repeatY: 1,
+      anisotropy: 2,
+      colorSpace: THREE.SRGBColorSpace,
+    },
+    (u, v) => {
+      const dx = u - 0.5;
+      const dy = v - 0.5;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const alpha = THREE.MathUtils.clamp(1 - dist * 2.05, 0, 1);
+      const soft = Math.pow(alpha, 1.85) * 200;
+      return { r: 28, g: 32, b: 22, a: soft };
+    },
+  );
+  shadowTexture.wrapS = THREE.ClampToEdgeWrapping;
+  shadowTexture.wrapT = THREE.ClampToEdgeWrapping;
+
+  const shadowMaterial = new THREE.MeshBasicMaterial({
+    map: shadowTexture,
+    transparent: true,
+    depthWrite: false,
+    opacity: 0.34,
+  });
+  const shadowMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.2, 2.2),
+    shadowMaterial,
+  );
+  shadowMesh.rotation.x = -Math.PI / 2;
+  shadowMesh.position.set(0, sampleSurfaceHeightAt(0, 0) + 0.012, 0);
+  shadowMesh.renderOrder = 2;
+  sceneRef.add(shadowMesh);
+
+  return {
+    mesh: shadowMesh,
+    material: shadowMaterial,
+    texture: shadowTexture,
+  };
+}
+
 function createSkyDome() {
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(50, 48, 24),
@@ -142,6 +425,8 @@ function createSkyDome() {
   scene.add(sky);
 }
 
+const visualTextures = createVisualTextures(renderer);
+
 function createGround() {
   const geometry = new THREE.PlaneGeometry(28, 28, 240, 240);
   const pos = geometry.attributes.position;
@@ -175,8 +460,11 @@ function createGround() {
   geometry.computeVertexNormals();
 
   const groundMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: visualTextures.groundMap,
+    roughnessMap: visualTextures.groundRoughnessMap,
     vertexColors: true,
-    roughness: 0.95,
+    roughness: 1,
     metalness: 0,
   });
 
@@ -203,7 +491,8 @@ function createGround() {
   const soil = new THREE.Mesh(
     soilGeometry,
     new THREE.MeshStandardMaterial({
-      color: 0x5b4738,
+      color: 0xffffff,
+      map: visualTextures.soilMap,
       roughness: 1,
       metalness: 0,
     }),
@@ -215,7 +504,8 @@ function createGround() {
 
   const pebbleGeometry = new THREE.IcosahedronGeometry(0.05, 0);
   const pebbleMaterial = new THREE.MeshStandardMaterial({
-    color: 0x8e8f81,
+    color: 0xffffff,
+    map: visualTextures.pebbleMap,
     roughness: 0.95,
     metalness: 0,
   });
@@ -294,6 +584,7 @@ function createAtmosphereParticles() {
 
 createSkyDome();
 const groundData = createGround();
+const groundContactShadow = createGroundContactShadow(scene);
 const staticPebbleColliders =
   groundData && Array.isArray(groundData.pebbleColliders)
     ? groundData.pebbleColliders
@@ -776,6 +1067,7 @@ class PlantSimulator {
 
     this.stemMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
+      map: visualTextures.barkMap,
       roughness: 0.84,
       metalness: 0.02,
       clearcoat: 0.16,
@@ -785,6 +1077,7 @@ class PlantSimulator {
 
     this.leafMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
+      map: visualTextures.leafMap,
       roughness: 0.61,
       metalness: 0.01,
       clearcoat: 0.08,
@@ -794,7 +1087,7 @@ class PlantSimulator {
       side: THREE.DoubleSide,
       emissive: 0x102214,
       emissiveIntensity: 0.06,
-      vertexColors: false,
+      vertexColors: true,
       opacity: 0.96,
       transparent: true,
     });
@@ -2966,6 +3259,18 @@ window.addEventListener("resize", () => {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 });
 
+function disposeVisualAssets() {
+  if (groundContactShadow) {
+    scene.remove(groundContactShadow.mesh);
+    if (groundContactShadow.mesh.geometry) {
+      groundContactShadow.mesh.geometry.dispose();
+    }
+    groundContactShadow.material.dispose();
+    groundContactShadow.texture.dispose();
+  }
+  visualTextures.dispose();
+}
+
 window.addEventListener("beforeunload", () => {
   physicsDebugOverlay.dispose();
   if (plant) {
@@ -2976,4 +3281,5 @@ window.addEventListener("beforeunload", () => {
     physicsEngine.dispose();
     physicsEngine = null;
   }
+  disposeVisualAssets();
 });

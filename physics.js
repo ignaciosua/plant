@@ -15,6 +15,12 @@ function quantizeLeafScale(value) {
   return Math.round(v * 160) / 160;
 }
 
+function setShapeMarginIfSupported(shape, margin) {
+  if (shape && typeof shape.setMargin === "function") {
+    shape.setMargin(margin);
+  }
+}
+
 function rotateOffsetByQuaternion(offset, quaternion) {
   const x = offset.x;
   const y = offset.y;
@@ -358,9 +364,7 @@ export class AmmoPhysicsEngine {
       // Fallback para builds sin BVH.
       shape = new Ammo.btTriangleMeshShape(triangleMesh, true);
     }
-    if (shape && typeof shape.setMargin === "function") {
-      shape.setMargin(0.001);
-    }
+    setShapeMarginIfSupported(shape, 0.001);
 
     this.staticShapes.push(shape);
     this.terrainMesh = triangleMesh;
@@ -390,7 +394,7 @@ export class AmmoPhysicsEngine {
     );
     const shape = new Ammo.btBoxShape(halfExtentsVector);
     Ammo.destroy(halfExtentsVector);
-    shape.setMargin(0.002);
+    setShapeMarginIfSupported(shape, 0.002);
     this.staticShapes.push(shape);
     if (debug) {
       this.debugStaticColliders.push({
@@ -419,7 +423,7 @@ export class AmmoPhysicsEngine {
     const halfExtentsVector = new Ammo.btVector3(radius, height * 0.5, radius);
     const shape = new Ammo.btCylinderShape(halfExtentsVector);
     Ammo.destroy(halfExtentsVector);
-    shape.setMargin(0.002);
+    setShapeMarginIfSupported(shape, 0.002);
     this.staticShapes.push(shape);
     this.debugStaticColliders.push({
       type: "cylinder",
@@ -475,7 +479,7 @@ export class AmmoPhysicsEngine {
     }
 
     const shape = new this.Ammo.btSphereShape(radius);
-    shape.setMargin(0.002);
+    setShapeMarginIfSupported(shape, 0.002);
     this.sphereShapes.set(key, shape);
     return shape;
   }
@@ -545,7 +549,7 @@ export class AmmoPhysicsEngine {
         shape.addPoint(vertex, true);
         Ammo.destroy(vertex);
       }
-      shape.setMargin(0.002);
+      setShapeMarginIfSupported(shape, 0.002);
       destroyShapes = [shape];
     } else {
       const bounds = leafGeometry && leafGeometry.boundingBox
@@ -572,7 +576,7 @@ export class AmmoPhysicsEngine {
       );
       const boxShape = new Ammo.btBoxShape(halfExtents);
       Ammo.destroy(halfExtents);
-      boxShape.setMargin(0.002);
+      setShapeMarginIfSupported(boxShape, 0.002);
 
       debugScale = { x: sizeX, y: sizeY, z: sizeZ };
       debugOffset = { x: centerX, y: centerY, z: centerZ };
@@ -639,7 +643,7 @@ export class AmmoPhysicsEngine {
     } else {
       shape = new this.Ammo.btSphereShape(radius);
     }
-    shape.setMargin(0.0015);
+    setShapeMarginIfSupported(shape, 0.0015);
 
     const descriptor = {
       key,
