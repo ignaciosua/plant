@@ -165,7 +165,7 @@ const PERFORMANCE_PROFILE = lowPowerMode
       groundSize: 56,
       groundSegments: 150,
       renderDistance: 28,
-      cameraMaxDistance: 3.7,
+      cameraMaxDistance: 5.2,
     }
   : {
       lowPowerMode: false,
@@ -179,7 +179,7 @@ const PERFORMANCE_PROFILE = lowPowerMode
       groundSize: 96,
       groundSegments: 280,
       renderDistance: 34,
-      cameraMaxDistance: 4.15,
+      cameraMaxDistance: 5.8,
     };
 
 const SKY_DOME_RADIUS = Math.max(
@@ -203,7 +203,7 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = PERFORMANCE_PROFILE.toneExposure;
 
 const scene = new THREE.Scene();
-const fogColor = new THREE.Color(0x9cb8c7);
+const fogColor = new THREE.Color(0x8fb8d8);
 scene.fog = new THREE.FogExp2(fogColor.getHex(), PERFORMANCE_PROFILE.fogDensity);
 scene.background = fogColor.clone();
 
@@ -213,7 +213,7 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   PERFORMANCE_PROFILE.renderDistance,
 );
-camera.position.set(1.96, 1.7, 2.24);
+camera.position.set(3.3, 2.15, 3.95);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 1.45, 0);
@@ -624,13 +624,14 @@ function createSkyDome() {
   const sunDirection = keyLight.position.clone().normalize();
   const skyMaterial = new THREE.ShaderMaterial({
     uniforms: {
-      topColor: { value: new THREE.Color(0x84b7e2) },
-      horizonColor: { value: new THREE.Color(0xd9d8bf) },
-      bottomColor: { value: new THREE.Color(0x7ca286) },
-      sunColor: { value: new THREE.Color(0xffe0b0) },
+      topColor: { value: new THREE.Color(0x5fa9e8) },
+      horizonColor: { value: new THREE.Color(0xd9ecff) },
+      bottomColor: { value: new THREE.Color(0x9abfd8) },
+      sunColor: { value: new THREE.Color(0xffe8be) },
       sunDirection: { value: sunDirection },
-      cloudAmount: { value: PERFORMANCE_PROFILE.lowPowerMode ? 0.52 : 0.68 },
-      exponent: { value: 1.02 },
+      cloudAmount: { value: PERFORMANCE_PROFILE.lowPowerMode ? 1.02 : 1.16 },
+      exponent: { value: 1.1 },
+      time: { value: 0 },
     },
     vertexShader: `
       varying vec3 vWorldPosition;
@@ -648,6 +649,7 @@ function createSkyDome() {
       uniform vec3 sunDirection;
       uniform float cloudAmount;
       uniform float exponent;
+      uniform float time;
       varying vec3 vWorldPosition;
 
       float hash(vec2 p) {
@@ -666,12 +668,31 @@ function createSkyDome() {
         ) * 0.5 + 0.5;
       }
 
-      float fbm(vec2 p) {
+      float noise3(vec3 p) {
+        float nXY = noise(p.xy);
+        float nYZ = noise(p.yz);
+        float nZX = noise(p.zx);
+        return (nXY + nYZ + nZX) / 3.0;
+      }
+
+      float fbm3(vec3 p) {
         float v = 0.0;
         float a = 0.5;
         for (int i = 0; i < 4; i++) {
-          v += a * noise(p);
-          p *= 2.02;
+          v += a * noise3(p);
+          p = p * 2.03 + vec3(11.4, -7.8, 5.9);
+          a *= 0.5;
+        }
+        return v;
+      }
+
+      float ridgedFbm3(vec3 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 4; i++) {
+          float n = noise3(p) * 2.0 - 1.0;
+          v += (1.0 - abs(n)) * a;
+          p = p * 2.08 + vec3(-6.1, 9.7, 4.3);
           a *= 0.5;
         }
         return v;
@@ -683,22 +704,44 @@ function createSkyDome() {
         float topMix = pow(h, exponent);
         float bottomMix = pow(1.0 - h, 1.65);
         vec3 sky = mix(horizonColor, topColor, topMix);
-        sky = mix(sky, bottomColor, bottomMix * 0.45);
+        sky = mix(sky, bottomColor, bottomMix * 0.42);
 
-        float cloudBase = fbm(dir.xz * 2.8 + vec2(0.0, dir.y * 0.85));
-        float cloudDetail = fbm(dir.xz * 8.2 + vec2(17.0, -11.0));
-        float clouds = smoothstep(0.48, 0.86, cloudBase * 0.78 + cloudDetail * 0.22);
-        clouds *= smoothstep(0.08, 0.82, h);
+        vec3 cloudDir = normalize(dir);
+        vec3 windA = vec3(time * 0.013, time * 0.003, -time * 0.008);
+        vec3 windB = vec3(-time * 0.007, time * 0.011, time * 0.005);
+        vec3 windC = vec3(time * 0.004, -time * 0.006, time * 0.009);
+
+        vec3 baseP = cloudDir * vec3(2.1, 1.35, 2.1);
+        vec3 midP = cloudDir * vec3(4.8, 2.3, 4.8);
+        vec3 highP = cloudDir * vec3(9.0, 3.2, 9.0);
+
+        float lowMass = fbm3(baseP + windA + vec3(1.7, -0.9, 3.1));
+        float puffs = ridgedFbm3(midP + windB + vec3(4.2, 7.3, -2.6));
+        float puffs2 = fbm3(midP * 1.17 - windA * 0.8 + vec3(-8.1, 2.4, 6.5));
+        float wisps = fbm3(highP + windC + vec3(12.0, 18.0, -9.0));
+
+        float cumulus = smoothstep(0.34, 0.76, lowMass * 0.6 + puffs * 0.3 + puffs2 * 0.1);
+        float clustered = smoothstep(0.52, 0.9, puffs * 0.66 + puffs2 * 0.34);
+        float cirrus = smoothstep(0.66, 0.93, wisps) * smoothstep(0.57, 1.0, h);
+
+        float altitudeMask = smoothstep(0.12, 0.92, h);
+        float clouds = cumulus * 0.84 + clustered * 0.44 + cirrus * 0.28;
+        clouds *= altitudeMask;
         clouds *= cloudAmount;
-        sky = mix(sky, sky * 1.08 + vec3(0.08, 0.09, 0.1), clouds * 0.28);
+        vec3 cloudTint = vec3(0.985, 0.995, 1.02);
+        sky = mix(sky, cloudTint, clouds * 0.62);
 
         float sunDot = max(dot(dir, normalize(sunDirection)), 0.0);
-        float sunCore = pow(sunDot, 780.0);
-        float sunHalo = pow(sunDot, 18.0);
-        sky += sunColor * (sunCore * 1.15 + sunHalo * 0.26);
+        float sunCore = pow(sunDot, 860.0);
+        float sunHalo = pow(sunDot, 16.0);
+        sky += sunColor * (sunCore * 1.2 + sunHalo * 0.31);
 
         float horizonHaze = smoothstep(0.0, 0.36, h) * (1.0 - smoothstep(0.36, 0.68, h));
-        sky += vec3(0.09, 0.08, 0.06) * horizonHaze * 0.18;
+        sky += vec3(0.08, 0.1, 0.12) * horizonHaze * 0.16;
+
+        // Small dithering to reduce visible gradient banding.
+        float grain = hash(gl_FragCoord.xy + vec2(time * 61.0, -time * 37.0)) * (1.0 / 255.0);
+        sky += grain;
 
         gl_FragColor = vec4(sky, 1.0);
       }
@@ -727,10 +770,10 @@ function createProceduralEnvironmentMap(rendererRef) {
   const ctx = canvas.getContext("2d");
 
   const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  gradient.addColorStop(0, "#81afda");
-  gradient.addColorStop(0.44, "#b8cee0");
-  gradient.addColorStop(0.7, "#d9d8bf");
-  gradient.addColorStop(1, "#90ad8e");
+  gradient.addColorStop(0, "#5da8e5");
+  gradient.addColorStop(0.42, "#b8dbf6");
+  gradient.addColorStop(0.7, "#dbeeff");
+  gradient.addColorStop(1, "#9fc0d7");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -743,13 +786,13 @@ function createProceduralEnvironmentMap(rendererRef) {
   ctx.fillStyle = sunGlow;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  ctx.globalAlpha = 0.06;
-  for (let i = 0; i < (PERFORMANCE_PROFILE.lowPowerMode ? 70 : 130); i += 1) {
+  ctx.globalAlpha = 0.11;
+  for (let i = 0; i < (PERFORMANCE_PROFILE.lowPowerMode ? 70 : 140); i += 1) {
     const x = Math.random() * canvas.width;
     const y = Math.random() * canvas.height * 0.78;
-    const w = 70 + Math.random() * 170;
-    const h = 16 + Math.random() * 45;
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    const w = 80 + Math.random() * 200;
+    const h = 18 + Math.random() * 50;
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
     ctx.beginPath();
     ctx.ellipse(x, y, w, h, Math.random() * Math.PI, 0, TAU);
     ctx.fill();
@@ -958,6 +1001,114 @@ function createGround() {
   };
 }
 
+function createDistantMountains() {
+  const group = new THREE.Group();
+  group.name = "distant-mountains";
+
+  const baseY = sampleGroundHeightAt(0, 0) - 0.34;
+  const baseRadius = Math.max(8.5, PERFORMANCE_PROFILE.groundSize * 0.18);
+  const segmentCount = PERFORMANCE_PROFILE.lowPowerMode ? 64 : 108;
+
+  const layers = [
+    {
+      radiusTop: baseRadius * 0.98,
+      radiusBottom: baseRadius * 1.06,
+      height: PERFORMANCE_PROFILE.lowPowerMode ? 5.4 : 6.7,
+      offsetY: 0.02,
+      seed: 311,
+      hue: 0.59,
+      sat: 0.22,
+      lightBase: 0.15,
+      lightRange: 0.24,
+      opacity: 0.92,
+    },
+    {
+      radiusTop: baseRadius * 1.42,
+      radiusBottom: baseRadius * 1.52,
+      height: PERFORMANCE_PROFILE.lowPowerMode ? 7.0 : 8.7,
+      offsetY: -0.28,
+      seed: 353,
+      hue: 0.595,
+      sat: 0.18,
+      lightBase: 0.12,
+      lightRange: 0.2,
+      opacity: 0.75,
+    },
+  ];
+
+  for (let l = 0; l < layers.length; l += 1) {
+    const layer = layers[l];
+    const geometry = new THREE.CylinderGeometry(
+      layer.radiusTop,
+      layer.radiusBottom,
+      layer.height,
+      segmentCount,
+      1,
+      true,
+    );
+    const pos = geometry.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    const color = new THREE.Color();
+
+    for (let i = 0; i < pos.count; i += 1) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const z = pos.getZ(i);
+      const angle = Math.atan2(z, x);
+      const a01 = (angle + Math.PI) / TAU;
+      const ridgeMacro = fbm2(a01 * 6.4, layer.seed * 0.013, layer.seed, 4);
+      const ridgeDetail = fbm2(a01 * 28.0, layer.seed * 0.019, layer.seed + 17, 3);
+      const ridge = Math.max(0, ridgeMacro * 0.78 + ridgeDetail * 0.22 - 0.32);
+
+      if (y > 0) {
+        const shoulder = Math.sin(angle * 3.0 + layer.seed * 0.17) * 0.22;
+        pos.setY(i, 0.75 + ridge * layer.height + shoulder);
+      } else {
+        pos.setY(i, -2.9 - ridge * 0.46);
+      }
+
+      const yn = THREE.MathUtils.clamp((pos.getY(i) + 3.1) / (layer.height + 3.3), 0, 1);
+      color.setHSL(
+        layer.hue - yn * 0.04,
+        layer.sat,
+        layer.lightBase + yn * layer.lightRange,
+      );
+      if (l > 0) {
+        color.multiplyScalar(0.82);
+      }
+      colors[i * 3] = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
+    }
+
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+
+    const material = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: 0.97,
+      metalness: 0.01,
+      envMapIntensity: 0.06,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: layer.opacity,
+      depthWrite: l === 0,
+      fog: true,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.y = baseY + layer.offsetY;
+    mesh.rotation.y = l === 0 ? 0.0 : 0.32;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    group.add(mesh);
+  }
+
+  scene.add(group);
+  return group;
+}
+
 function createAtmosphereParticles() {
   const count = PERFORMANCE_PROFILE.atmosphereCount;
   const geometry = new THREE.BufferGeometry();
@@ -1004,6 +1155,7 @@ function createAtmosphereParticles() {
 }
 
 const groundData = createGround();
+const distantMountains = createDistantMountains();
 const groundContactShadow = createGroundContactShadow(scene);
 const staticExtraColliders =
   groundData && Array.isArray(groundData.extraColliders)
@@ -4931,6 +5083,13 @@ function animate() {
   }
   if (skyDome) {
     skyDome.position.copy(camera.position);
+    if (
+      skyDome.material &&
+      skyDome.material.uniforms &&
+      skyDome.material.uniforms.time
+    ) {
+      skyDome.material.uniforms.time.value = elapsed;
+    }
   }
 
   physicsDebugOverlay.update(physicsEngine);
@@ -4973,6 +5132,19 @@ function disposeVisualAssets() {
   if (environmentMap) {
     scene.environment = null;
     environmentMap.dispose();
+  }
+  if (distantMountains) {
+    scene.remove(distantMountains);
+    distantMountains.traverse((obj) => {
+      if (obj.isMesh) {
+        if (obj.geometry) {
+          obj.geometry.dispose();
+        }
+        if (obj.material) {
+          obj.material.dispose();
+        }
+      }
+    });
   }
   if (groundContactShadow) {
     scene.remove(groundContactShadow.mesh);
