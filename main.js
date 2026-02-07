@@ -1184,6 +1184,59 @@ class PlantSimulator {
     this._leafCollisionWorldB = new THREE.Vector3();
     this._leafCollisionLocal = new THREE.Vector3();
     this._leafCollisionInvQuat = new THREE.Quaternion();
+    this._updateScratch = {
+      swayQuatA: new THREE.Quaternion(),
+      swayQuatB: new THREE.Quaternion(),
+      swayQuatC: new THREE.Quaternion(),
+      tipWorld: new THREE.Vector3(),
+      dynamicTargetQuat: new THREE.Quaternion(),
+      leafAnchorSurfaceWorld: new THREE.Vector3(),
+      leafAxisWorld: new THREE.Vector3(),
+      leafBaseQuaternion: new THREE.Quaternion(),
+      leafFallWorld: new THREE.Vector3(),
+      leafStartLocal: new THREE.Vector3(),
+      leafStartWorld: new THREE.Vector3(),
+      leafWorld: new THREE.Vector3(),
+      leafFlightWorld: new THREE.Vector3(),
+      leafWindWorld: new THREE.Vector3(),
+      leafGroundWorld: new THREE.Vector3(),
+      leafGroundLocal: new THREE.Vector3(),
+      leafLateral: new THREE.Vector3(),
+      leafTint: new THREE.Color(),
+      leafEmissiveTint: new THREE.Color(),
+      leafOrientationQuat: new THREE.Quaternion(),
+      leafGroundQuat: new THREE.Quaternion(),
+      physicsPositionWorld: new THREE.Vector3(),
+      physicsVelocityWorld: new THREE.Vector3(),
+      physicsQuaternionWorld: new THREE.Quaternion(),
+      groupWorldQuaternion: new THREE.Quaternion(),
+      inverseGroupWorldQuaternion: new THREE.Quaternion(),
+      segmentColliderLocal: new THREE.Vector3(),
+      segmentColliderWorld: new THREE.Vector3(),
+      segmentColliderWorldQuaternion: new THREE.Quaternion(),
+      segmentDirectionWorld: new THREE.Vector3(),
+      segmentDesiredDirection: new THREE.Vector3(),
+      segmentLimitedDirection: new THREE.Vector3(),
+      segmentCollisionPush: new THREE.Vector3(),
+      segmentCollisionClosest: new THREE.Vector3(),
+      segmentCollisionClosestOther: new THREE.Vector3(),
+      segmentCollisionDelta: new THREE.Vector3(),
+      segmentCollisionFallback: new THREE.Vector3(),
+      segmentCurrentDir: new THREE.Vector3(),
+      segmentOtherDir: new THREE.Vector3(),
+      segmentCorrectionQuat: new THREE.Quaternion(),
+      segmentPreCorrectionQuat: new THREE.Quaternion(),
+      segmentLocalCorrectionQuat: new THREE.Quaternion(),
+      segmentPersistentBlendQuat: new THREE.Quaternion(),
+      identityQuat: new THREE.Quaternion(0, 0, 0, 1),
+      leafBranchClosest: new THREE.Vector3(),
+      leafBranchDelta: new THREE.Vector3(),
+      plantColliders: [],
+      evaluatedBranchColliders: [],
+      lifecycleStates: [],
+      activeDetachingIndices: [],
+      pendingStartIndices: [],
+    };
 
     this.segmentGeometry = new THREE.CylinderGeometry(
       CYLINDER_TOP_RADIUS,
@@ -2903,55 +2956,69 @@ class PlantSimulator {
     };
   }
 
+  _getUpdateScratch() {
+    const scratch = this._updateScratch;
+    scratch.plantColliders.length = 0;
+    scratch.evaluatedBranchColliders.length = 0;
+    scratch.activeDetachingIndices.length = 0;
+    scratch.pendingStartIndices.length = 0;
+    return scratch;
+  }
+
   update(elapsedSeconds, age, windStrength) {
-    const swayQuatA = new THREE.Quaternion();
-    const swayQuatB = new THREE.Quaternion();
-    const swayQuatC = new THREE.Quaternion();
-    const tipWorld = new THREE.Vector3();
-    const dynamicTargetQuat = new THREE.Quaternion();
-    const leafAnchorSurfaceWorld = new THREE.Vector3();
-    const leafAxisWorld = new THREE.Vector3();
-    const leafBaseQuaternion = new THREE.Quaternion();
-    const leafFallWorld = new THREE.Vector3();
-    const leafStartLocal = new THREE.Vector3();
-    const leafStartWorld = new THREE.Vector3();
-    const leafWorld = new THREE.Vector3();
-    const leafFlightWorld = new THREE.Vector3();
-    const leafWindWorld = new THREE.Vector3();
-    const leafGroundWorld = new THREE.Vector3();
-    const leafGroundLocal = new THREE.Vector3();
-    const leafLateral = new THREE.Vector3();
-    const leafTint = new THREE.Color();
-    const leafEmissiveTint = new THREE.Color();
-    const leafOrientationQuat = new THREE.Quaternion();
-    const leafGroundQuat = new THREE.Quaternion();
-    const physicsPositionWorld = new THREE.Vector3();
-    const physicsVelocityWorld = new THREE.Vector3();
-    const physicsQuaternionWorld = new THREE.Quaternion();
-    const groupWorldQuaternion = new THREE.Quaternion();
-    const inverseGroupWorldQuaternion = new THREE.Quaternion();
-    const segmentColliderLocal = new THREE.Vector3();
-    const segmentColliderWorld = new THREE.Vector3();
-    const segmentColliderWorldQuaternion = new THREE.Quaternion();
-    const segmentDirectionWorld = new THREE.Vector3();
-    const segmentDesiredDirection = new THREE.Vector3();
-    const segmentLimitedDirection = new THREE.Vector3();
-    const segmentCollisionPush = new THREE.Vector3();
-    const segmentCollisionClosest = new THREE.Vector3();
-    const segmentCollisionClosestOther = new THREE.Vector3();
-    const segmentCollisionDelta = new THREE.Vector3();
-    const segmentCollisionFallback = new THREE.Vector3();
-    const segmentCurrentDir = new THREE.Vector3();
-    const segmentOtherDir = new THREE.Vector3();
-    const segmentCorrectionQuat = new THREE.Quaternion();
-    const segmentPreCorrectionQuat = new THREE.Quaternion();
-    const segmentLocalCorrectionQuat = new THREE.Quaternion();
-    const segmentPersistentBlendQuat = new THREE.Quaternion();
-    const identityQuat = new THREE.Quaternion(0, 0, 0, 1);
-    const leafBranchClosest = new THREE.Vector3();
-    const leafBranchDelta = new THREE.Vector3();
-    const plantColliders = [];
-    const evaluatedBranchColliders = [];
+    const {
+      swayQuatA,
+      swayQuatB,
+      swayQuatC,
+      tipWorld,
+      dynamicTargetQuat,
+      leafAnchorSurfaceWorld,
+      leafAxisWorld,
+      leafBaseQuaternion,
+      leafFallWorld,
+      leafStartLocal,
+      leafStartWorld,
+      leafWorld,
+      leafFlightWorld,
+      leafWindWorld,
+      leafGroundWorld,
+      leafGroundLocal,
+      leafLateral,
+      leafTint,
+      leafEmissiveTint,
+      leafOrientationQuat,
+      leafGroundQuat,
+      physicsPositionWorld,
+      physicsVelocityWorld,
+      physicsQuaternionWorld,
+      groupWorldQuaternion,
+      inverseGroupWorldQuaternion,
+      segmentColliderLocal,
+      segmentColliderWorld,
+      segmentColliderWorldQuaternion,
+      segmentDirectionWorld,
+      segmentDesiredDirection,
+      segmentLimitedDirection,
+      segmentCollisionPush,
+      segmentCollisionClosest,
+      segmentCollisionClosestOther,
+      segmentCollisionDelta,
+      segmentCollisionFallback,
+      segmentCurrentDir,
+      segmentOtherDir,
+      segmentCorrectionQuat,
+      segmentPreCorrectionQuat,
+      segmentLocalCorrectionQuat,
+      segmentPersistentBlendQuat,
+      identityQuat,
+      leafBranchClosest,
+      leafBranchDelta,
+      plantColliders,
+      evaluatedBranchColliders,
+      lifecycleStates,
+      activeDetachingIndices,
+      pendingStartIndices,
+    } = this._getUpdateScratch();
     const deltaSeconds =
       this.lastUpdateTime === null
         ? 0
@@ -3558,7 +3625,7 @@ class PlantSimulator {
       this.checkRuntimeCollisions();
     }
 
-    const lifecycleStates = new Array(this.leaves.length);
+    lifecycleStates.length = this.leaves.length;
     for (let i = 0; i < this.leaves.length; i += 1) {
       lifecycleStates[i] = this.computeLeafLifecycle(
         this.leaves[i],
@@ -3597,8 +3664,8 @@ class PlantSimulator {
       hardConcurrentFallCap,
     );
 
-    const activeDetachingIndices = [];
-    const pendingStartIndices = [];
+    activeDetachingIndices.length = 0;
+    pendingStartIndices.length = 0;
     for (let i = 0; i < this.leaves.length; i += 1) {
       const leaf = this.leaves[i];
       const state = lifecycleStates[i];
@@ -4239,8 +4306,10 @@ async function initializePhysics() {
     const engine = new AmmoPhysicsEngine({
       sampleHeightAt: sampleSurfaceHeightAt,
       extraStaticColliders: staticExtraColliders,
+      debugEnabled: state.showPhysicsColliders,
     });
     await engine.init();
+    engine.setDebugEnabled(state.showPhysicsColliders);
     physicsEngine = engine;
     physicsState.loading = false;
     physicsState.ready = true;
@@ -4354,6 +4423,9 @@ ui.physics.addEventListener("change", () => {
 ui.physicsDebug.addEventListener("change", () => {
   state.showPhysicsColliders = ui.physicsDebug.checked;
   physicsDebugOverlay.setEnabled(state.showPhysicsColliders);
+  if (physicsEngine && physicsEngine.ready) {
+    physicsEngine.setDebugEnabled(state.showPhysicsColliders);
+  }
 });
 
 ui.jointCaps.addEventListener("change", () => {

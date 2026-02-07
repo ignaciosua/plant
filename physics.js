@@ -148,6 +148,7 @@ export class AmmoPhysicsEngine {
     this.extraStaticColliders = Array.isArray(options.extraStaticColliders)
       ? options.extraStaticColliders
       : [];
+    this.debugEnabled = options.debugEnabled !== false;
 
     this.Ammo = null;
     this.ready = false;
@@ -161,6 +162,12 @@ export class AmmoPhysicsEngine {
     this.collisionConfig = null;
 
     this.tmpTransform = null;
+    this.tmpKinematicTransform = null;
+    this.tmpKinematicOrigin = null;
+    this.tmpKinematicRotation = null;
+    this.tmpVecA = null;
+    this.tmpVecB = null;
+    this.tmpVecC = null;
     this.staticBodies = [];
     this.dynamicBodies = new Set();
     this.staticShapes = [];
@@ -172,6 +179,7 @@ export class AmmoPhysicsEngine {
     this.lastAerodynamicsTime = null;
     this.debugStaticColliders = [];
     this.debugPlantColliders = [];
+    this._plantColliderSeen = new Set();
   }
 
   async init() {
@@ -220,6 +228,53 @@ export class AmmoPhysicsEngine {
     Ammo.destroy(gravity);
 
     this.tmpTransform = new Ammo.btTransform();
+    this.tmpKinematicTransform = new Ammo.btTransform();
+    this.tmpKinematicOrigin = new Ammo.btVector3(0, 0, 0);
+    this.tmpKinematicRotation = new Ammo.btQuaternion(0, 0, 0, 1);
+    this.tmpVecA = new Ammo.btVector3(0, 0, 0);
+    this.tmpVecB = new Ammo.btVector3(0, 0, 0);
+    this.tmpVecC = new Ammo.btVector3(0, 0, 0);
+  }
+
+  _setBtVector(target, x, y, z) {
+    if (target && typeof target.setValue === "function") {
+      target.setValue(x, y, z);
+    } else if (
+      target &&
+      typeof target.setX === "function" &&
+      typeof target.setY === "function" &&
+      typeof target.setZ === "function"
+    ) {
+      target.setX(x);
+      target.setY(y);
+      target.setZ(z);
+    }
+    return target;
+  }
+
+  _setBtQuaternion(target, x, y, z, w) {
+    if (target && typeof target.setValue === "function") {
+      target.setValue(x, y, z, w);
+    } else if (
+      target &&
+      typeof target.setX === "function" &&
+      typeof target.setY === "function" &&
+      typeof target.setZ === "function" &&
+      typeof target.setW === "function"
+    ) {
+      target.setX(x);
+      target.setY(y);
+      target.setZ(z);
+      target.setW(w);
+    }
+    return target;
+  }
+
+  setDebugEnabled(nextEnabled) {
+    this.debugEnabled = Boolean(nextEnabled);
+    if (!this.debugEnabled) {
+      this.debugPlantColliders.length = 0;
+    }
   }
 
   _createStaticColliders() {
@@ -674,26 +729,34 @@ export class AmmoPhysicsEngine {
       return;
     }
 
-    this.debugPlantColliders = colliders.map((collider) => ({
-      type: collider.type === "cylinder" ? "cylinder" : "sphere",
-      x: collider.x,
-      y: collider.y,
-      z: collider.z,
-      radius: collider.radius,
-      height: collider.height || collider.radius * 2,
-      quaternion: collider.quaternion || { x: 0, y: 0, z: 0, w: 1 },
-      scale:
-        collider.type === "cylinder"
-          ? {
-            x: collider.radius * 2,
-            y: collider.height,
-            z: collider.radius * 2,
-          }
-          : undefined,
-    }));
+    if (this.debugEnabled) {
+      this.debugPlantColliders = colliders.map((collider) => ({
+        type: collider.type === "cylinder" ? "cylinder" : "sphere",
+        x: collider.x,
+        y: collider.y,
+        z: collider.z,
+        radius: collider.radius,
+        height: collider.height || collider.radius * 2,
+        quaternion: collider.quaternion || { x: 0, y: 0, z: 0, w: 1 },
+        scale:
+          collider.type === "cylinder"
+            ? {
+              x: collider.radius * 2,
+              y: collider.height,
+              z: collider.radius * 2,
+            }
+            : undefined,
+      }));
+    } else if (this.debugPlantColliders.length > 0) {
+      this.debugPlantColliders.length = 0;
+    }
 
     const Ammo = this.Ammo;
-    const seen = new Set();
+    const seen = this._plantColliderSeen;
+    seen.clear();
+    const updateTransform = this.tmpKinematicTransform;
+    const updateOrigin = this.tmpKinematicOrigin;
+    const updateRotation = this.tmpKinematicRotation;
 
     for (let i = 0; i < colliders.length; i += 1) {
       const collider = colliders[i];
@@ -747,20 +810,16 @@ export class AmmoPhysicsEngine {
         Ammo.destroy(transform);
       }
 
-      const updateTransform = new Ammo.btTransform();
       updateTransform.setIdentity();
-      const updateOrigin = new Ammo.btVector3(collider.x, collider.y, collider.z);
+      this._setBtVector(updateOrigin, collider.x, collider.y, collider.z);
       updateTransform.setOrigin(updateOrigin);
-      Ammo.destroy(updateOrigin);
       const q = collider.quaternion || IDENTITY_QUATERNION;
-      const updateRotation = new Ammo.btQuaternion(q.x, q.y, q.z, q.w);
+      this._setBtQuaternion(updateRotation, q.x, q.y, q.z, q.w);
       updateTransform.setRotation(updateRotation);
-      Ammo.destroy(updateRotation);
 
       entry.body.setWorldTransform(updateTransform);
       entry.motionState.setWorldTransform(updateTransform);
       entry.body.activate();
-      Ammo.destroy(updateTransform);
     }
 
     for (const [id, entry] of this.plantBodies.entries()) {
@@ -906,12 +965,14 @@ export class AmmoPhysicsEngine {
       return;
     }
 
-    const Ammo = this.Ammo;
     const windScale = Math.max(0, windStrength);
     const dt = this.lastAerodynamicsTime === null
       ? 0
       : Math.min(0.12, Math.max(0, elapsedSeconds - this.lastAerodynamicsTime));
     this.lastAerodynamicsTime = elapsedSeconds;
+    const tmpVecA = this.tmpVecA;
+    const tmpVecB = this.tmpVecB;
+    const tmpVecC = this.tmpVecC;
 
     for (const handle of this.dynamicBodies) {
       const body = handle.body;
@@ -979,23 +1040,15 @@ export class AmmoPhysicsEngine {
       if (handle.groundLocked) {
         if (!handle.factorsFrozen) {
           if (typeof body.setLinearFactor === "function") {
-            const linearFactor = new Ammo.btVector3(0, 0, 0);
-            body.setLinearFactor(linearFactor);
-            Ammo.destroy(linearFactor);
+            body.setLinearFactor(this._setBtVector(tmpVecA, 0, 0, 0));
           }
           if (typeof body.setAngularFactor === "function") {
-            const angularFactor = new Ammo.btVector3(0, 0, 0);
-            body.setAngularFactor(angularFactor);
-            Ammo.destroy(angularFactor);
+            body.setAngularFactor(this._setBtVector(tmpVecB, 0, 0, 0));
           }
           handle.factorsFrozen = true;
         }
-        const stopLinear = new Ammo.btVector3(0, 0, 0);
-        body.setLinearVelocity(stopLinear);
-        Ammo.destroy(stopLinear);
-        const stopAngular = new Ammo.btVector3(0, 0, 0);
-        body.setAngularVelocity(stopAngular);
-        Ammo.destroy(stopAngular);
+        body.setLinearVelocity(this._setBtVector(tmpVecA, 0, 0, 0));
+        body.setAngularVelocity(this._setBtVector(tmpVecB, 0, 0, 0));
         if (typeof body.setActivationState === "function") {
           body.setActivationState(2);
         }
@@ -1058,9 +1111,7 @@ export class AmmoPhysicsEngine {
           fz += tz * liftMagnitude;
         }
 
-        const force = new Ammo.btVector3(fx, fy, fz);
-        body.applyCentralForce(force);
-        Ammo.destroy(force);
+        body.applyCentralForce(this._setBtVector(tmpVecA, fx, fy, fz));
 
         const ax = ny * dirz - nz * diry;
         const ay = nz * dirx - nx * dirz;
@@ -1076,13 +1127,14 @@ export class AmmoPhysicsEngine {
             (0.5 + (1 - alignment) * 1.4) *
             flutter *
             (0.04 + aeroMix * 0.96);
-          const torque = new Ammo.btVector3(
-            ax * axisLengthInv * torqueMagnitude,
-            ay * axisLengthInv * torqueMagnitude,
-            az * axisLengthInv * torqueMagnitude,
+          body.applyTorque(
+            this._setBtVector(
+              tmpVecB,
+              ax * axisLengthInv * torqueMagnitude,
+              ay * axisLengthInv * torqueMagnitude,
+              az * axisLengthInv * torqueMagnitude,
+            ),
           );
-          body.applyTorque(torque);
-          Ammo.destroy(torque);
         }
       }
 
@@ -1103,13 +1155,14 @@ export class AmmoPhysicsEngine {
             (0.006 + handle.torqueScale * 12) *
             settleBlend *
             (0.38 + tilt * 0.62);
-          const settleTorque = new Ammo.btVector3(
-            settleAxisX * invTilt * settleStrength,
-            0,
-            settleAxisZ * invTilt * settleStrength,
+          body.applyTorque(
+            this._setBtVector(
+              tmpVecC,
+              settleAxisX * invTilt * settleStrength,
+              0,
+              settleAxisZ * invTilt * settleStrength,
+            ),
           );
-          body.applyTorque(settleTorque);
-          Ammo.destroy(settleTorque);
         }
       }
 
@@ -1124,13 +1177,14 @@ export class AmmoPhysicsEngine {
         const spinBlend = Math.min(1, Math.max(0, (settleBlend - 0.08) / 0.92));
         const tiltFactor = Math.max(0.12, 1 - spinBlend * 0.62);
         const yawFactor = Math.max(0.06, 1 - spinBlend * 0.9);
-        const dampedAngular = new Ammo.btVector3(
-          avx * tiltFactor,
-          avy * yawFactor,
-          avz * tiltFactor,
+        body.setAngularVelocity(
+          this._setBtVector(
+            tmpVecA,
+            avx * tiltFactor,
+            avy * yawFactor,
+            avz * tiltFactor,
+          ),
         );
-        body.setAngularVelocity(dampedAngular);
-        Ammo.destroy(dampedAngular);
         avx *= tiltFactor;
         avy *= yawFactor;
         avz *= tiltFactor;
@@ -1142,13 +1196,14 @@ export class AmmoPhysicsEngine {
       const maxAngularSpeedSq = maxAngularSpeed * maxAngularSpeed;
       if (angularSpeedSq > maxAngularSpeedSq) {
         const angInv = 1 / Math.sqrt(angularSpeedSq);
-        const cappedAngular = new Ammo.btVector3(
-          avx * angInv * maxAngularSpeed,
-          avy * angInv * maxAngularSpeed,
-          avz * angInv * maxAngularSpeed,
+        body.setAngularVelocity(
+          this._setBtVector(
+            tmpVecA,
+            avx * angInv * maxAngularSpeed,
+            avy * angInv * maxAngularSpeed,
+            avz * angInv * maxAngularSpeed,
+          ),
         );
-        body.setAngularVelocity(cappedAngular);
-        Ammo.destroy(cappedAngular);
       }
 
       const finalLinearVelocity = body.getLinearVelocity();
@@ -1174,12 +1229,8 @@ export class AmmoPhysicsEngine {
         handle.groundStableTime += dt * Math.max(0.22, stabilityBoost);
 
         if (handle.groundStableTime > handle.groundLockDelay) {
-          const stopLinear = new Ammo.btVector3(0, 0, 0);
-          body.setLinearVelocity(stopLinear);
-          Ammo.destroy(stopLinear);
-          const stopAngular = new Ammo.btVector3(0, 0, 0);
-          body.setAngularVelocity(stopAngular);
-          Ammo.destroy(stopAngular);
+          body.setLinearVelocity(this._setBtVector(tmpVecA, 0, 0, 0));
+          body.setAngularVelocity(this._setBtVector(tmpVecB, 0, 0, 0));
           handle.groundLocked = true;
           handle.groundStableTime = handle.groundLockDelay;
           if (typeof body.setActivationState === "function") {
@@ -1193,9 +1244,14 @@ export class AmmoPhysicsEngine {
 
       if (speedSq > 36) {
         const speedInv = 1 / Math.sqrt(speedSq);
-        const capped = new Ammo.btVector3(vx * speedInv * 6, vy * speedInv * 6, vz * speedInv * 6);
-        body.setLinearVelocity(capped);
-        Ammo.destroy(capped);
+        body.setLinearVelocity(
+          this._setBtVector(
+            tmpVecA,
+            vx * speedInv * 6,
+            vy * speedInv * 6,
+            vz * speedInv * 6,
+          ),
+        );
       }
     }
   }
@@ -1203,6 +1259,13 @@ export class AmmoPhysicsEngine {
   getDebugState() {
     if (!this.ready || !this.world) {
       return null;
+    }
+    if (!this.debugEnabled) {
+      return {
+        static: this.debugStaticColliders,
+        plant: [],
+        dynamic: [],
+      };
     }
 
     const dynamic = [];
@@ -1384,8 +1447,34 @@ export class AmmoPhysicsEngine {
       this.terrainMesh = null;
     }
 
-    this.Ammo.destroy(this.tmpTransform);
-    this.tmpTransform = null;
+    if (this.tmpTransform) {
+      this.Ammo.destroy(this.tmpTransform);
+      this.tmpTransform = null;
+    }
+    if (this.tmpKinematicTransform) {
+      this.Ammo.destroy(this.tmpKinematicTransform);
+      this.tmpKinematicTransform = null;
+    }
+    if (this.tmpKinematicOrigin) {
+      this.Ammo.destroy(this.tmpKinematicOrigin);
+      this.tmpKinematicOrigin = null;
+    }
+    if (this.tmpKinematicRotation) {
+      this.Ammo.destroy(this.tmpKinematicRotation);
+      this.tmpKinematicRotation = null;
+    }
+    if (this.tmpVecA) {
+      this.Ammo.destroy(this.tmpVecA);
+      this.tmpVecA = null;
+    }
+    if (this.tmpVecB) {
+      this.Ammo.destroy(this.tmpVecB);
+      this.tmpVecB = null;
+    }
+    if (this.tmpVecC) {
+      this.Ammo.destroy(this.tmpVecC);
+      this.tmpVecC = null;
+    }
 
     this.Ammo.destroy(this.world);
     this.Ammo.destroy(this.solver);
@@ -1401,6 +1490,7 @@ export class AmmoPhysicsEngine {
 
     this.debugStaticColliders.length = 0;
     this.debugPlantColliders.length = 0;
+    this._plantColliderSeen.clear();
     this.lastAerodynamicsTime = null;
 
     this.ready = false;
