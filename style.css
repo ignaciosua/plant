@@ -42,6 +42,7 @@ body {
   position: fixed;
   top: 1rem;
   left: 1rem;
+  z-index: 10;
   width: min(23rem, calc(100vw - 2rem));
   max-height: calc(100vh - 2rem);
   overflow: auto;
@@ -54,6 +55,44 @@ body {
     inset 0 1px 0 #ffffffa8;
   backdrop-filter: blur(12px) saturate(1.08);
   animation: panel-rise 480ms cubic-bezier(0.19, 1, 0.22, 1);
+}
+
+.ui-toggle {
+  position: fixed;
+  left: 0.92rem;
+  bottom: 0.92rem;
+  z-index: 14;
+  width: 2.25rem;
+  height: 2.25rem;
+  border: 1px solid #c4b795;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #f8f5e8f5 0%, #ece5cdf1 100%);
+  box-shadow:
+    0 8px 18px #1a251d26,
+    inset 0 1px 0 #ffffffad;
+  backdrop-filter: blur(8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.ui-toggle:hover {
+  transform: translateY(-1px);
+}
+
+.ui-toggle:active {
+  transform: translateY(0);
+}
+
+.ui-toggle__chevron {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-right: 2px solid #2f6a4a;
+  border-bottom: 2px solid #2f6a4a;
+  transform: rotate(45deg);
+  transition: transform 180ms ease;
 }
 
 #ui::before {
@@ -260,6 +299,22 @@ h1 {
     width: auto;
     max-height: 60vh;
     padding: 0.85rem 0.85rem 0.9rem;
+    transition: transform 220ms ease, opacity 220ms ease;
+    will-change: transform, opacity;
+  }
+
+  body.ui-collapsed #ui {
+    transform: translateY(calc(100% + 0.85rem));
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .ui-toggle {
+    display: inline-flex;
+  }
+
+  body.ui-collapsed .ui-toggle__chevron {
+    transform: rotate(-135deg);
   }
 
   h1 {

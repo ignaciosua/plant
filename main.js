@@ -474,11 +474,15 @@ function createGround() {
 
   const soilGeometry = new THREE.CylinderGeometry(0.55, 0.86, 0.34, 52, 5, false);
   const soilPos = soilGeometry.attributes.position;
+  let soilMaxRadius = 0;
   for (let i = 0; i < soilPos.count; i += 1) {
     const vx = soilPos.getX(i);
     const vy = soilPos.getY(i);
     const vz = soilPos.getZ(i);
     const radial = Math.sqrt(vx * vx + vz * vz);
+    if (radial > soilMaxRadius) {
+      soilMaxRadius = radial;
+    }
     const bump = Math.sin(vx * 18) * Math.cos(vz * 16) * 0.008;
     if (vy > 0.02) {
       soilPos.setY(i, vy + Math.max(0, 0.07 - radial * 0.08) + bump);
@@ -487,6 +491,12 @@ function createGround() {
     }
   }
   soilGeometry.computeVertexNormals();
+  soilGeometry.computeBoundingBox();
+  const soilBounds = soilGeometry.boundingBox;
+  const soilHalfHeight =
+    soilBounds ? Math.max(0.001, (soilBounds.max.y - soilBounds.min.y) * 0.5) : 0.2;
+  const soilCenterYOffset = soilBounds ? (soilBounds.max.y + soilBounds.min.y) * 0.5 : 0;
+  const soilBaseY = 0.12;
 
   const soil = new THREE.Mesh(
     soilGeometry,
@@ -497,12 +507,25 @@ function createGround() {
       metalness: 0,
     }),
   );
-  soil.position.set(0, 0.12, 0);
+  soil.position.set(0, soilBaseY, 0);
   soil.castShadow = true;
   soil.receiveShadow = true;
   scene.add(soil);
 
   const pebbleGeometry = new THREE.IcosahedronGeometry(0.05, 0);
+  pebbleGeometry.computeBoundingBox();
+  const pebbleBounds = pebbleGeometry.boundingBox;
+  const pebbleHalfBase = new THREE.Vector3(
+    pebbleBounds
+      ? Math.max(0.001, (pebbleBounds.max.x - pebbleBounds.min.x) * 0.5)
+      : 0.05,
+    pebbleBounds
+      ? Math.max(0.001, (pebbleBounds.max.y - pebbleBounds.min.y) * 0.5)
+      : 0.05,
+    pebbleBounds
+      ? Math.max(0.001, (pebbleBounds.max.z - pebbleBounds.min.z) * 0.5)
+      : 0.05,
+  );
   const pebbleMaterial = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     map: visualTextures.pebbleMap,
@@ -526,7 +549,6 @@ function createGround() {
     matrix.compose(posVec, quat, scale);
     pebbles.setMatrixAt(i, matrix);
 
-    const baseRadius = 0.05;
     pebbleColliders.push({
       type: "box",
       center: {
@@ -535,9 +557,9 @@ function createGround() {
         z: posVec.z,
       },
       halfExtents: {
-        x: baseRadius * scale.x,
-        y: baseRadius * scale.y,
-        z: baseRadius * scale.z,
+        x: pebbleHalfBase.x * scale.x,
+        y: pebbleHalfBase.y * scale.y,
+        z: pebbleHalfBase.z * scale.z,
       },
       quaternion: {
         x: quat.x,
@@ -554,7 +576,17 @@ function createGround() {
   scene.add(pebbles);
 
   return {
-    pebbleColliders,
+    extraColliders: [
+      {
+        type: "cylinder",
+        center: { x: 0, y: soilBaseY + soilCenterYOffset, z: 0 },
+        radius: Math.max(0.01, soilMaxRadius),
+        height: Math.max(0.01, soilHalfHeight * 2),
+        friction: 1.02,
+        restitution: 0.02,
+      },
+      ...pebbleColliders,
+    ],
   };
 }
 
@@ -585,9 +617,9 @@ function createAtmosphereParticles() {
 createSkyDome();
 const groundData = createGround();
 const groundContactShadow = createGroundContactShadow(scene);
-const staticPebbleColliders =
-  groundData && Array.isArray(groundData.pebbleColliders)
-    ? groundData.pebbleColliders
+const staticExtraColliders =
+  groundData && Array.isArray(groundData.extraColliders)
+    ? groundData.extraColliders
     : [];
 const atmosphereParticles = createAtmosphereParticles();
 
@@ -974,6 +1006,62 @@ function smooth01(value) {
   return v * v * (3 - 2 * v);
 }
 
+const _closestSegTmpA = new THREE.Vector3();
+const _closestSegTmpB = new THREE.Vector3();
+const _closestSegTmpR = new THREE.Vector3();
+
+function closestPointsOnSegments(a0, a1, b0, b1, outA, outB) {
+  const d1 = _closestSegTmpA.copy(a1).sub(a0);
+  const d2 = _closestSegTmpB.copy(b1).sub(b0);
+  const r = _closestSegTmpR.copy(a0).sub(b0);
+  const a = d1.dot(d1);
+  const e = d2.dot(d2);
+  const f = d2.dot(r);
+  const EPS = 1e-10;
+
+  let s = 0;
+  let t = 0;
+
+  if (a <= EPS && e <= EPS) {
+    outA.copy(a0);
+    outB.copy(b0);
+    return;
+  }
+
+  if (a <= EPS) {
+    s = 0;
+    t = THREE.MathUtils.clamp(f / e, 0, 1);
+  } else {
+    const c = d1.dot(r);
+    if (e <= EPS) {
+      t = 0;
+      s = THREE.MathUtils.clamp(-c / a, 0, 1);
+    } else {
+      const b = d1.dot(d2);
+      const denom = a * e - b * b;
+      if (Math.abs(denom) > EPS) {
+        s = THREE.MathUtils.clamp((b * f - c * e) / denom, 0, 1);
+      } else {
+        s = 0;
+      }
+
+      const tnom = b * s + f;
+      if (tnom < 0) {
+        t = 0;
+        s = THREE.MathUtils.clamp(-c / a, 0, 1);
+      } else if (tnom > e) {
+        t = 1;
+        s = THREE.MathUtils.clamp((b - c) / a, 0, 1);
+      } else {
+        t = tnom / e;
+      }
+    }
+  }
+
+  outA.copy(a0).addScaledVector(d1, s);
+  outB.copy(b0).addScaledVector(d2, t);
+}
+
 function createLeafGeometry() {
   const shape = new THREE.Shape();
   shape.moveTo(0, 0);
@@ -1013,6 +1101,24 @@ class PlantSimulator {
   constructor(sceneRef, settings) {
     this.scene = sceneRef;
     this.settings = settings;
+    this.settings.branchLeafSpread = THREE.MathUtils.clamp(
+      Number.isFinite(this.settings.branchLeafSpread)
+        ? this.settings.branchLeafSpread
+        : 0.45,
+      0,
+      1,
+    );
+    this.settings.branchSag = THREE.MathUtils.clamp(
+      Number.isFinite(this.settings.branchSag) ? this.settings.branchSag : 0.28,
+      0,
+      1,
+    );
+    this.settings.branchCollision = THREE.MathUtils.clamp(
+      Number.isFinite(this.settings.branchCollision) ? this.settings.branchCollision : 0.72,
+      0,
+      1,
+    );
+    this.settings.showJointCaps = this.settings.showJointCaps !== false;
     this.rng = seededRandom(settings.seed);
     this.group = new THREE.Group();
     this.scene.add(this.group);
@@ -1031,20 +1137,26 @@ class PlantSimulator {
     this.segmentBudget = Math.round(760 + this.settings.maxDepth * 115);
     this.segmentCount = 0;
     this.lastUpdateTime = null;
+    this._lifecycleStartTime = null;
     this._lastPlantColliderSyncTime = null;
     this._plantColliderSyncInterval = 1 / 30;
     this._maxAttachedLeafColliders = 160;
     this.physics = settings.physics || null;
+    this._leafCollisionWorldA = new THREE.Vector3();
+    this._leafCollisionWorldB = new THREE.Vector3();
+    this._leafCollisionLocal = new THREE.Vector3();
+    this._leafCollisionInvQuat = new THREE.Quaternion();
 
     this.segmentGeometry = new THREE.CylinderGeometry(
       CYLINDER_TOP_RADIUS,
       CYLINDER_BASE_RADIUS,
       1,
-      18,
+      22,
       1,
       false,
     );
     this.segmentGeometry.translate(0, 0.5, 0);
+    this.segmentJointGeometry = new THREE.SphereGeometry(1, 18, 14);
 
     const stemPos = this.segmentGeometry.attributes.position;
     const stemColors = new Float32Array(stemPos.count * 3);
@@ -1065,6 +1177,26 @@ class PlantSimulator {
       stemColors[i * 3 + 2] = stemColor.b;
     }
     this.segmentGeometry.setAttribute("color", new THREE.BufferAttribute(stemColors, 3));
+    const jointPos = this.segmentJointGeometry.attributes.position;
+    const jointColors = new Float32Array(jointPos.count * 3);
+    const jointColor = new THREE.Color();
+    for (let i = 0; i < jointPos.count; i += 1) {
+      const x = jointPos.getX(i);
+      const y = jointPos.getY(i);
+      const z = jointPos.getZ(i);
+      const radial = Math.sqrt(x * x + z * z);
+      const heightTone = THREE.MathUtils.clamp((y + 1) * 0.5, 0, 1);
+      jointColor.setHSL(
+        0.265,
+        0.22,
+        0.285 + heightTone * 0.105 - radial * 0.04,
+      );
+      jointColor.multiplyScalar(0.9);
+      jointColors[i * 3] = jointColor.r;
+      jointColors[i * 3 + 1] = jointColor.g;
+      jointColors[i * 3 + 2] = jointColor.b;
+    }
+    this.segmentJointGeometry.setAttribute("color", new THREE.BufferAttribute(jointColors, 3));
 
     this.leafGeometry = createLeafGeometry();
 
@@ -1079,6 +1211,10 @@ class PlantSimulator {
       emissiveIntensity: 0.045,
       vertexColors: true,
     });
+    this.stemJointMaterial = this.stemMaterial.clone();
+    this.stemJointMaterial.clearcoat = 0.06;
+    this.stemJointMaterial.clearcoatRoughness = 0.88;
+    this.stemJointMaterial.emissiveIntensity = 0.03;
 
     this.leafMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
@@ -1111,6 +1247,7 @@ class PlantSimulator {
       0.015,
       0.9,
     );
+    this.refreshSegmentLoadFactors();
   }
 
   buildBranch(origin, direction, length, radius, depth, birthStart, growthSpan, anchorSegment = null) {
@@ -1239,22 +1376,51 @@ class PlantSimulator {
 
       const depthRatio = depth / Math.max(1, this.settings.maxDepth);
       const tipProgress = i / Math.max(1, segments - 1);
-      // Distribución más uniforme: base 0.3 + ramp suave hacia la punta
-      const tipWeight = 0.3 + 0.7 * Math.pow(
-        smooth01((tipProgress - 0.1) / 0.9),
-        0.7,
+      const branchLeafSpread = THREE.MathUtils.clamp(
+        this.settings.branchLeafSpread,
+        0,
+        1,
       );
-      const outerDepthWeight = THREE.MathUtils.clamp(
+      const tipRamp = Math.pow(
+        smooth01((tipProgress - 0.08) / 0.92),
+        THREE.MathUtils.lerp(1.35, 0.62, branchLeafSpread),
+      );
+      const tipBaseWeight = THREE.MathUtils.lerp(0.2, 0.62, branchLeafSpread);
+      const tipWeight = THREE.MathUtils.clamp(
+        tipBaseWeight + (1 - tipBaseWeight) * tipRamp,
+        0.08,
+        1,
+      );
+      const depthWeightBase = THREE.MathUtils.clamp(
         0.25 + depthRatio * 0.85,
         0,
         1,
       );
-      const trunkPenalty = depth === 0 ? 0.08 : depth === 1 ? 0.6 : 1;
+      const depthWeightSpread = THREE.MathUtils.clamp(
+        0.45 + depthRatio * 0.55,
+        0,
+        1,
+      );
+      const depthWeight = THREE.MathUtils.lerp(
+        depthWeightBase,
+        depthWeightSpread,
+        branchLeafSpread,
+      );
+      const trunkPenalty = depth === 0
+        ? THREE.MathUtils.lerp(0.08, 0.16, branchLeafSpread)
+        : depth === 1
+          ? THREE.MathUtils.lerp(0.6, 0.95, branchLeafSpread)
+          : 1;
+      const midBranchBias =
+        smooth01((tipProgress - 0.18) / 0.46) *
+        (1 - smooth01((tipProgress - 0.7) / 0.3));
+      const interiorBoost = 1 + branchLeafSpread * midBranchBias * 0.38;
       const leafChance = THREE.MathUtils.clamp(
         this.settings.leafDensity *
-          (0.35 + outerDepthWeight * 0.85) *
+          (0.32 + depthWeight * 0.9) *
           tipWeight *
-          trunkPenalty,
+          trunkPenalty *
+          interiorBoost,
         0,
         0.995,
       );
@@ -1507,6 +1673,106 @@ class PlantSimulator {
     );
   }
 
+  _applyLeafCollisionNudge(leaf, worldNudge, scale = 1) {
+    if (
+      !leaf ||
+      !leaf.anchorSegment ||
+      !leaf.anchorCollisionOffsetLocal ||
+      leaf.isDetaching
+    ) {
+      return;
+    }
+
+    const nudgeScale = THREE.MathUtils.clamp(scale, 0, 0.9);
+    if (nudgeScale <= 1e-5 || worldNudge.lengthSq() <= 1e-12) {
+      return;
+    }
+
+    this._leafCollisionInvQuat.copy(leaf.anchorSegment.pivot.quaternion).invert();
+    this._leafCollisionLocal
+      .copy(worldNudge)
+      .applyQuaternion(this._leafCollisionInvQuat);
+
+    leaf.anchorCollisionOffsetLocal.addScaledVector(
+      this._leafCollisionLocal,
+      nudgeScale,
+    );
+
+    const maxOffset = THREE.MathUtils.clamp(
+      0.006 + (leaf.finalScale?.y || 0.22) * 0.045,
+      0.009,
+      0.028,
+    );
+    const offsetLen = leaf.anchorCollisionOffsetLocal.length();
+    if (offsetLen > maxOffset) {
+      leaf.anchorCollisionOffsetLocal.multiplyScalar(maxOffset / offsetLen);
+    }
+
+    leaf.anchorAxialOffset = THREE.MathUtils.clamp(
+      leaf.anchorAxialOffset || 0,
+      -0.03,
+      0.03,
+    );
+  }
+
+  resolveLeafCollisionShape(a, b, distSq, collisionRadius, sameAnchor = false) {
+    if (!a || !b || a.isDetaching || b.isDetaching) {
+      return;
+    }
+    if (!a.anchorSegment || !b.anchorSegment) {
+      return;
+    }
+
+    this._leafCollisionWorldA.copy(b.pivot.position).sub(a.pivot.position);
+    let dist = Math.sqrt(Math.max(distSq, 1e-12));
+    if (dist < 1e-5) {
+      const fallbackA = a.anchorSurfaceLocal
+        ? this._leafCollisionWorldB
+            .copy(a.anchorSurfaceLocal)
+            .applyQuaternion(a.anchorSegment.pivot.quaternion)
+        : this._leafCollisionWorldB.set(1, 0, 0);
+      const fallbackB = b.anchorSurfaceLocal
+        ? this._leafCollisionWorldA
+            .copy(b.anchorSurfaceLocal)
+            .applyQuaternion(b.anchorSegment.pivot.quaternion)
+        : this._leafCollisionWorldA.set(-1, 0, 0);
+      this._leafCollisionWorldA.copy(fallbackB).sub(fallbackA);
+      if (this._leafCollisionWorldA.lengthSq() < 1e-8) {
+        this._leafCollisionWorldA.set(1, 0, 0);
+      }
+      this._leafCollisionWorldA.normalize();
+      dist = 0;
+    } else {
+      this._leafCollisionWorldA.multiplyScalar(1 / dist);
+    }
+
+    const overlap = collisionRadius - dist;
+    if (overlap <= 0) {
+      return;
+    }
+
+    const aPriority = Number.isFinite(a.tipPriority) ? a.tipPriority : 0.5;
+    const bPriority = Number.isFinite(b.tipPriority) ? b.tipPriority : 0.5;
+    const moveA = THREE.MathUtils.clamp(
+      0.5 + (bPriority - aPriority) * 0.34,
+      0.18,
+      0.82,
+    );
+    const moveB = 1 - moveA;
+    const sameAnchorScale = sameAnchor ? 0.56 : 1;
+    const pushMagnitude = overlap * 0.2 * sameAnchorScale;
+
+    this._leafCollisionWorldB
+      .copy(this._leafCollisionWorldA)
+      .multiplyScalar(-pushMagnitude * moveA);
+    this._applyLeafCollisionNudge(a, this._leafCollisionWorldB, 1);
+
+    this._leafCollisionWorldB
+      .copy(this._leafCollisionWorldA)
+      .multiplyScalar(pushMagnitude * moveB);
+    this._applyLeafCollisionNudge(b, this._leafCollisionWorldB, 1);
+  }
+
   /**
    * When a new leaf is placed, freeze growth for nearby leaves so they stop
    * expanding into each other.
@@ -1591,7 +1857,7 @@ class PlantSimulator {
           if (!b || b.isDetaching || b.mesh.scale.x < 0.01) {
             continue;
           }
-          if (a.anchorSegment && a.anchorSegment === b.anchorSegment) continue;
+          const sameAnchor = a.anchorSegment && a.anchorSegment === b.anchorSegment;
 
           const distSq = a.pivot.position.distanceToSquared(b.pivot.position);
           if (distSq >= COLLISION_RADIUS_SQ || distSq <= 0.00001) {
@@ -1600,6 +1866,13 @@ class PlantSimulator {
 
           this.lockLeafGrowthOnCollision(a);
           this.lockLeafGrowthOnCollision(b);
+          this.resolveLeafCollisionShape(
+            a,
+            b,
+            distSq,
+            COLLISION_RADIUS,
+            Boolean(sameAnchor),
+          );
 
           const aGrowth = THREE.MathUtils.clamp(
             Number.isFinite(a.currentGrowth) ? a.currentGrowth : 0,
@@ -1612,6 +1885,7 @@ class PlantSimulator {
             1,
           );
           if (
+            !sameAnchor &&
             distSq < HARD_OVERLAP_RADIUS_SQ &&
             aGrowth > 0.82 &&
             bGrowth > 0.82
@@ -1903,6 +2177,55 @@ class PlantSimulator {
     }
   }
 
+  refreshSegmentLoadFactors() {
+    for (let i = 0; i < this.segments.length; i += 1) {
+      const segment = this.segments[i];
+      segment.subtreeLoad =
+        (segment.directLeafLoad || 0) * 0.85 +
+        segment.finalLength * (0.3 + segment.finalRadius * 4.2);
+    }
+
+    for (let i = this.segments.length - 1; i >= 0; i -= 1) {
+      const segment = this.segments[i];
+      if (segment.children && segment.children.length > 0) {
+        for (let c = 0; c < segment.children.length; c += 1) {
+          const child = segment.children[c];
+          segment.subtreeLoad += (child.subtreeLoad || 0) * 0.84;
+        }
+      }
+      const depthWeight = 1 + Math.max(0, segment.depth - 1) * 0.14;
+      segment.bendLoadFactor = THREE.MathUtils.clamp(
+        (segment.subtreeLoad || 0) * 0.13 * depthWeight,
+        0.08,
+        3.6,
+      );
+    }
+  }
+
+  isSegmentAncestor(candidateAncestor, segment) {
+    if (!candidateAncestor || !segment) {
+      return false;
+    }
+    let current = segment.parentSegment || null;
+    while (current) {
+      if (current === candidateAncestor) {
+        return true;
+      }
+      current = current.parentSegment || null;
+    }
+    return false;
+  }
+
+  areSegmentsRelated(a, b) {
+    if (!a || !b) {
+      return false;
+    }
+    if (a === b) {
+      return true;
+    }
+    return this.isSegmentAncestor(a, b) || this.isSegmentAncestor(b, a);
+  }
+
   createSegment(start, direction, length, radius, depth, birth, duration, parentSegment = null) {
     const pivot = new THREE.Group();
     pivot.position.copy(start);
@@ -1928,11 +2251,38 @@ class PlantSimulator {
     mesh.scale.set(radius * 0.43, 0.0001, radius * 0.43);
     pivot.add(mesh);
 
+    let jointCap = null;
+    if (parentSegment) {
+      jointCap = new THREE.Mesh(this.segmentJointGeometry, this.stemJointMaterial);
+      jointCap.castShadow = false;
+      jointCap.receiveShadow = true;
+      jointCap.scale.set(0.0001, 0.0001, 0.0001);
+      jointCap.visible = false;
+      pivot.add(jointCap);
+    }
+
+    const tipCap = new THREE.Mesh(this.segmentJointGeometry, this.stemMaterial);
+    tipCap.castShadow = false;
+    tipCap.receiveShadow = true;
+    tipCap.scale.set(0.0001, 0.0001, 0.0001);
+    tipCap.visible = false;
+    pivot.add(tipCap);
+
     this.group.add(pivot);
     const baseQuaternion = pivot.quaternion.clone();
     const localQuaternion = parentSegment
       ? parentSegment.baseQuaternion.clone().invert().multiply(baseQuaternion.clone())
       : null;
+    const gravityAxisWorld = new THREE.Vector3().crossVectors(directionNormalized, DOWN);
+    if (gravityAxisWorld.lengthSq() < 1e-6) {
+      gravityAxisWorld.set(this.rng() < 0.5 ? -1 : 1, 0, 0);
+    }
+    gravityAxisWorld.normalize();
+    const inverseBaseQuaternion = baseQuaternion.clone().invert();
+    const gravityAxisLocal = gravityAxisWorld
+      .clone()
+      .applyQuaternion(inverseBaseQuaternion)
+      .normalize();
     const swayAmplitudeBase = (0.004 + depth * 0.0035) * (0.8 + this.rng() * 0.6);
     const swayAmplitude = parentSegment
       ? parentSegment.swayAmplitude * (0.86 + this.rng() * 0.16)
@@ -1945,8 +2295,16 @@ class PlantSimulator {
     const segment = {
       pivot,
       mesh,
+      jointCap,
+      tipCap,
       baseQuaternion,
       localQuaternion,
+      jointBlendFactor: parentSegment && localQuaternion
+        ? smooth01(
+            (2 * Math.acos(THREE.MathUtils.clamp(Math.abs(localQuaternion.w), 0, 1)) - 0.06) /
+              0.38,
+          )
+        : 0,
       start: start.clone(),
       birth,
       duration,
@@ -1956,11 +2314,29 @@ class PlantSimulator {
       depth,
       parentSegment,
       tipPosition: start.clone(),
+      currentGrowth: 0,
+      currentLength: 0,
+      renderLength: 0,
+      baseOverlap: 0,
       currentBaseRadius: 0,
       currentTopRadius: 0,
       swayAmplitude: isMainTrunk ? 0 : swayAmplitude,
       swayPhase: isMainTrunk ? 0 : swayPhase,
+      gravityAxisLocal,
+      gravityFlex: isMainTrunk ? 0 : (0.14 + this.rng() * 0.14),
+      maxGravityBend: isMainTrunk ? 0 : (0.08 + this.rng() * 0.1),
+      groundAvoidanceBend: isMainTrunk ? 0 : (0.03 + this.rng() * 0.03),
+      children: [],
+      directLeafLoad: 0,
+      bendLoadFactor: 0.08,
+      collisionCorrectionQuat: new THREE.Quaternion(),
+      collisionCorrectionLimit: isMainTrunk
+        ? 0
+        : THREE.MathUtils.clamp(0.26 + depth * 0.08 + this.rng() * 0.12, 0.26, 0.95),
     };
+    if (parentSegment) {
+      parentSegment.children.push(segment);
+    }
     this.segments.push(segment);
     return segment;
   }
@@ -2087,6 +2463,16 @@ class PlantSimulator {
       ? emergenceDurationOverride
       : 0.62 + this.rng() * 0.45 + Math.min(0.28, depth * 0.05);
 
+    if (anchorSegment) {
+      const leafLoadContribution = THREE.MathUtils.clamp(
+        (lengthScale * widthScale) * 3.2,
+        0.12,
+        1.25,
+      );
+      anchorSegment.directLeafLoad =
+        (anchorSegment.directLeafLoad || 0) + leafLoadContribution;
+    }
+
     this.group.add(pivot);
     this.leaves.push({
       pivot,
@@ -2139,6 +2525,7 @@ class PlantSimulator {
         0.017,
         (widthScale * 0.085) + (lengthScale * 0.11),
       ),
+      anchorCollisionOffsetLocal: new THREE.Vector3(),
       physicsHandle: null,
       physicsLockedScale: null,
     });
@@ -2506,15 +2893,67 @@ class PlantSimulator {
     const segmentColliderLocal = new THREE.Vector3();
     const segmentColliderWorld = new THREE.Vector3();
     const segmentColliderWorldQuaternion = new THREE.Quaternion();
+    const segmentDirectionWorld = new THREE.Vector3();
+    const segmentDesiredDirection = new THREE.Vector3();
+    const segmentLimitedDirection = new THREE.Vector3();
+    const segmentCollisionPush = new THREE.Vector3();
+    const segmentCollisionClosest = new THREE.Vector3();
+    const segmentCollisionClosestOther = new THREE.Vector3();
+    const segmentCollisionDelta = new THREE.Vector3();
+    const segmentCollisionFallback = new THREE.Vector3();
+    const segmentCurrentDir = new THREE.Vector3();
+    const segmentOtherDir = new THREE.Vector3();
+    const segmentCorrectionQuat = new THREE.Quaternion();
+    const segmentPreCorrectionQuat = new THREE.Quaternion();
+    const segmentLocalCorrectionQuat = new THREE.Quaternion();
+    const segmentPersistentBlendQuat = new THREE.Quaternion();
+    const identityQuat = new THREE.Quaternion(0, 0, 0, 1);
+    const leafBranchClosest = new THREE.Vector3();
+    const leafBranchDelta = new THREE.Vector3();
     const plantColliders = [];
+    const evaluatedBranchColliders = [];
     const deltaSeconds =
       this.lastUpdateTime === null
         ? 0
         : THREE.MathUtils.clamp(elapsedSeconds - this.lastUpdateTime, 0, 0.12);
     this.lastUpdateTime = elapsedSeconds;
+    if (this._lifecycleStartTime === null || elapsedSeconds < this._lifecycleStartTime) {
+      this._lifecycleStartTime = elapsedSeconds;
+    }
+    const lifecycleElapsedSeconds = Math.max(0, elapsedSeconds - this._lifecycleStartTime);
 
     this.group.rotation.y = Math.sin(elapsedSeconds * 0.4) * 0.028 * windStrength;
     this.group.position.x = Math.sin(elapsedSeconds * 0.35) * 0.013 * windStrength;
+    const structuralCorrectionWeight = smooth01((0.985 - age) / 0.32);
+    const structuralCorrectionsEnabled = structuralCorrectionWeight > 0.0005;
+
+    for (let i = 0; i < this.segments.length; i += 1) {
+      this.segments[i].runtimeLeafLoad = 0;
+    }
+    for (let i = 0; i < this.leaves.length; i += 1) {
+      const leaf = this.leaves[i];
+      if (!leaf.anchorSegment || leaf.isDetaching) {
+        continue;
+      }
+      const growthWeight = THREE.MathUtils.clamp(leaf.currentGrowth || 0, 0, 1);
+      if (growthWeight <= 1e-4) {
+        continue;
+      }
+      const scaleX = leaf.finalScale?.x || 0.2;
+      const scaleY = leaf.finalScale?.y || 0.25;
+      const leafLoad = growthWeight * THREE.MathUtils.clamp(scaleX * scaleY * 2.9, 0.04, 1.2);
+      leaf.anchorSegment.runtimeLeafLoad += leafLoad;
+    }
+    for (let i = this.segments.length - 1; i >= 0; i -= 1) {
+      const segment = this.segments[i];
+      let propagated = segment.runtimeLeafLoad || 0;
+      if (segment.children && segment.children.length > 0) {
+        for (let c = 0; c < segment.children.length; c += 1) {
+          propagated += (segment.children[c].runtimeLeafLoad || 0) * 0.82;
+        }
+      }
+      segment.runtimeLeafLoad = propagated;
+    }
 
     for (let i = 0; i < this.segments.length; i += 1) {
       const segment = this.segments[i];
@@ -2537,6 +2976,21 @@ class PlantSimulator {
       }
 
       const grownLength = Math.max(0.0001, segment.finalLength * growth);
+      segment.currentGrowth = growth;
+      const currentBaseRadius = segment.finalRadius * radialGrowth;
+      const isTrunkSegment = segment.depth === 0;
+      const overlapBlend = isTrunkSegment
+        ? 0
+        : THREE.MathUtils.clamp(segment.jointBlendFactor || 0, 0, 1);
+      const overlapBase = Math.min(
+        grownLength * 0.11,
+        Math.max(0.0012, currentBaseRadius * 0.32),
+      );
+      const connectionOverlap =
+        segment.parentSegment && overlapBlend > 0.12
+          ? overlapBase * overlapBlend
+          : 0;
+      const renderedLength = grownLength + connectionOverlap;
 
       if (segment.parentSegment) {
         segment.pivot.position.copy(segment.parentSegment.tipPosition);
@@ -2544,13 +2998,24 @@ class PlantSimulator {
         segment.pivot.position.copy(segment.start);
       }
 
-      segment.mesh.scale.set(
-        segment.finalRadius * radialGrowth,
-        grownLength,
-        segment.finalRadius * radialGrowth,
-      );
+      segment.mesh.scale.set(currentBaseRadius, renderedLength, currentBaseRadius);
       segment.currentLength = grownLength;
-      segment.mesh.position.y = grownLength * segment.baseOffset;
+      segment.renderLength = renderedLength;
+      segment.baseOverlap = connectionOverlap;
+      segment.mesh.position.y = grownLength * segment.baseOffset - connectionOverlap;
+      if (segment.jointCap) {
+        const jointScale = Math.max(
+          0.0001,
+          currentBaseRadius * THREE.MathUtils.lerp(1.015, 1.055, overlapBlend),
+        );
+        segment.jointCap.scale.set(jointScale, jointScale, jointScale);
+        segment.jointCap.position.set(0, 0, 0);
+        segment.jointCap.visible =
+          Boolean(this.settings.showJointCaps) &&
+          !isTrunkSegment &&
+          growth > 0.04 &&
+          overlapBlend > 0.2;
+      }
 
       // Orientación por continuidad padre->hijo.
       // El tronco puede curvarse porque ya no se fuerza quaternion identidad.
@@ -2564,6 +3029,69 @@ class PlantSimulator {
           .slerp(dynamicTargetQuat, alignProgress);
       } else {
         segment.pivot.quaternion.copy(segment.baseQuaternion);
+      }
+
+      if (segment.depth !== 0) {
+        const branchSag = THREE.MathUtils.clamp(this.settings.branchSag ?? 0.28, 0, 1);
+        const depthNorm = THREE.MathUtils.clamp(
+          segment.depth / Math.max(1, this.settings.maxDepth),
+          0,
+          1,
+        );
+        const depthSagFactor = THREE.MathUtils.lerp(
+          0.06,
+          1.26,
+          Math.pow(depthNorm, 1.6),
+        );
+        const dynamicLoadBoost = THREE.MathUtils.clamp(
+          1 + (segment.runtimeLeafLoad || 0) * 0.16 * structuralCorrectionWeight,
+          1,
+          1.45,
+        );
+        const gravityBend =
+          branchSag *
+          segment.gravityFlex *
+          (segment.bendLoadFactor || 0.08) *
+          dynamicLoadBoost *
+          depthSagFactor *
+          (0.24 + growth * 0.76) *
+          (0.25 + plantMaturity * 0.75);
+        const gravityAngle = THREE.MathUtils.clamp(
+          gravityBend,
+          0,
+          segment.maxGravityBend || 0.28,
+        );
+        if (gravityAngle > 1e-6) {
+          swayQuatA.setFromAxisAngle(segment.gravityAxisLocal, gravityAngle);
+          segment.pivot.quaternion.multiply(swayQuatA);
+        }
+
+        tipWorld
+          .set(0, segment.mesh.position.y + renderedLength, 0)
+          .applyQuaternion(segment.pivot.quaternion)
+          .add(segment.pivot.position);
+        const terrainY = sampleSurfaceHeightAt(tipWorld.x, tipWorld.z) + 0.055;
+        if (tipWorld.y < terrainY) {
+          const penetration = THREE.MathUtils.clamp(
+            (terrainY - tipWorld.y) / Math.max(0.05, grownLength * 0.55),
+            0,
+            1,
+          );
+          const liftAngle =
+            penetration *
+            (segment.groundAvoidanceBend || 0.05) *
+            structuralCorrectionWeight;
+          if (liftAngle > 1e-6) {
+            swayQuatB.setFromAxisAngle(segment.gravityAxisLocal, -liftAngle);
+            segment.pivot.quaternion.multiply(swayQuatB);
+          }
+        }
+
+        if (segment.collisionCorrectionQuat) {
+          segment.pivot.quaternion
+            .multiply(segment.collisionCorrectionQuat)
+            .normalize();
+        }
       }
 
       // Solo aplicar sway (movimiento por viento) a ramas, no al tronco principal
@@ -2580,14 +3108,249 @@ class PlantSimulator {
         segment.pivot.quaternion.multiply(swayQuatA).multiply(swayQuatB);
       }
 
-      segment.currentBaseRadius = segment.finalRadius * radialGrowth;
+      segment.currentBaseRadius = currentBaseRadius;
       segment.currentTopRadius = segment.currentBaseRadius * CYLINDER_TAPER;
+      if (segment.tipCap) {
+        const tipScale = Math.max(0.0001, segment.currentTopRadius * 1.08);
+        segment.tipCap.scale.set(tipScale, tipScale, tipScale);
+        segment.tipCap.position.set(0, segment.mesh.position.y + renderedLength, 0);
+        let hasVisibleChild = false;
+        if (segment.children && segment.children.length > 0) {
+          for (let c = 0; c < segment.children.length; c += 1) {
+            if ((segment.children[c].currentGrowth || 0) > 0.06) {
+              hasVisibleChild = true;
+              break;
+            }
+          }
+        }
+        segment.tipCap.visible = growth > 0.06 && !hasVisibleChild;
+      }
 
+      const segmentCollisionRadius = Math.max(
+        0.0035,
+        Math.max(segment.currentBaseRadius, segment.currentTopRadius),
+      );
       tipWorld
-        .set(0, segment.mesh.position.y + grownLength, 0)
+        .set(0, segment.mesh.position.y + renderedLength, 0)
         .applyQuaternion(segment.pivot.quaternion)
         .add(segment.pivot.position);
+
+      if (
+        structuralCorrectionsEnabled &&
+        segment.depth !== 0 &&
+        evaluatedBranchColliders.length > 0
+      ) {
+        const branchCollision = THREE.MathUtils.clamp(
+          (this.settings.branchCollision ?? 0.72) * structuralCorrectionWeight,
+          0,
+          1,
+        );
+        if (branchCollision > 0.001) {
+          const depthNorm = THREE.MathUtils.clamp(
+            segment.depth / Math.max(1, this.settings.maxDepth),
+            0,
+            1,
+          );
+          const depthCollisionFactor = THREE.MathUtils.lerp(
+            0.35,
+            1.12,
+            Math.pow(depthNorm, 1.25),
+          );
+          const branchCollisionPasses = 2;
+          for (let pass = 0; pass < branchCollisionPasses; pass += 1) {
+            segmentCollisionPush.set(0, 0, 0);
+
+            for (let c = 0; c < evaluatedBranchColliders.length; c += 1) {
+              const other = evaluatedBranchColliders[c];
+              if (this.areSegmentsRelated(segment, other.segment)) {
+                continue;
+              }
+              if (other.segment.depth === 0 && segment.depth <= 1) {
+                continue;
+              }
+
+              const currentLenSq = tipWorld.distanceToSquared(segment.pivot.position);
+              const otherLenSq = other.tip.distanceToSquared(other.base);
+              if (currentLenSq < 1e-10 || otherLenSq < 1e-10) {
+                continue;
+              }
+
+              closestPointsOnSegments(
+                segment.pivot.position,
+                tipWorld,
+                other.base,
+                other.tip,
+                segmentCollisionClosest,
+                segmentCollisionClosestOther,
+              );
+
+              segmentCollisionDelta
+                .copy(segmentCollisionClosest)
+                .sub(segmentCollisionClosestOther);
+              const distSq = segmentCollisionDelta.lengthSq();
+              const minDist =
+                (segmentCollisionRadius + other.radius) *
+                THREE.MathUtils.lerp(0.88, 1.22, branchCollision);
+              if (distSq >= minDist * minDist) {
+                continue;
+              }
+
+              let dist = Math.sqrt(Math.max(distSq, 1e-12));
+              if (dist < 1e-5) {
+                segmentCurrentDir
+                  .copy(tipWorld)
+                  .sub(segment.pivot.position)
+                  .normalize();
+                segmentOtherDir
+                  .copy(other.tip)
+                  .sub(other.base)
+                  .normalize();
+
+                segmentCollisionFallback
+                  .copy(segmentCurrentDir)
+                  .cross(segmentOtherDir);
+                if (segmentCollisionFallback.lengthSq() < 1e-8) {
+                  segmentCollisionFallback
+                    .copy(segmentCurrentDir)
+                    .cross(UP);
+                }
+                if (segmentCollisionFallback.lengthSq() < 1e-8) {
+                  segmentCollisionFallback.set(1, 0, 0);
+                }
+                segmentCollisionDelta.copy(segmentCollisionFallback).normalize();
+                dist = 0;
+              } else {
+                segmentCollisionDelta.multiplyScalar(1 / dist);
+              }
+
+              const penetration = minDist - dist;
+              if (penetration > 0) {
+                segmentCollisionPush.addScaledVector(
+                  segmentCollisionDelta,
+                  penetration * (0.95 + branchCollision * 1.35),
+                );
+              }
+            }
+
+            const pushLen = segmentCollisionPush.length();
+            if (pushLen <= 1e-6) {
+              break;
+            }
+
+            const maxPush =
+              grownLength *
+              (0.14 + branchCollision * 0.48) *
+              depthCollisionFactor *
+              smooth01((growth - 0.03) / 0.97);
+            if (pushLen > maxPush) {
+              segmentCollisionPush.multiplyScalar(maxPush / pushLen);
+            }
+
+            segmentDesiredDirection
+              .copy(tipWorld)
+              .add(segmentCollisionPush)
+              .sub(segment.pivot.position);
+            if (segmentDesiredDirection.lengthSq() <= 1e-8) {
+              continue;
+            }
+            segmentDesiredDirection.normalize();
+            segmentDirectionWorld
+              .set(0, 1, 0)
+              .applyQuaternion(segment.pivot.quaternion)
+              .normalize();
+            const dirDot = THREE.MathUtils.clamp(
+              segmentDirectionWorld.dot(segmentDesiredDirection),
+              -1,
+              1,
+            );
+            const dirAngle = Math.acos(dirDot);
+            const maxCorrectionAngle =
+              (0.11 + branchCollision * 0.32) *
+              depthCollisionFactor *
+              smooth01((growth - 0.03) / 0.97);
+
+            if (dirAngle <= 1e-5) {
+              continue;
+            }
+
+            if (dirAngle > maxCorrectionAngle && maxCorrectionAngle > 0) {
+              segmentLimitedDirection
+                .copy(segmentDirectionWorld)
+                .lerp(segmentDesiredDirection, maxCorrectionAngle / dirAngle)
+                .normalize();
+            } else {
+              segmentLimitedDirection.copy(segmentDesiredDirection);
+            }
+            segmentCorrectionQuat.setFromUnitVectors(
+              segmentDirectionWorld,
+              segmentLimitedDirection,
+            );
+            segmentPreCorrectionQuat.copy(segment.pivot.quaternion);
+            segment.pivot.quaternion.premultiply(segmentCorrectionQuat).normalize();
+
+            tipWorld
+              .copy(segmentLimitedDirection)
+              .multiplyScalar(grownLength)
+              .add(segment.pivot.position);
+
+            if (
+              segment.collisionCorrectionQuat &&
+              segment.parentSegment
+            ) {
+              const persistence = THREE.MathUtils.clamp(
+                (0.3 + branchCollision * 0.46) * depthCollisionFactor,
+                0.16,
+                0.88,
+              );
+              segmentLocalCorrectionQuat
+                .copy(segmentPreCorrectionQuat)
+                .invert()
+                .multiply(segmentCorrectionQuat)
+                .multiply(segmentPreCorrectionQuat)
+                .normalize();
+              segmentPersistentBlendQuat
+                .set(0, 0, 0, 1)
+                .slerp(segmentLocalCorrectionQuat, persistence);
+              segment.collisionCorrectionQuat
+                .multiply(segmentPersistentBlendQuat)
+                .normalize();
+
+              const corrW = THREE.MathUtils.clamp(
+                segment.collisionCorrectionQuat.w,
+                -1,
+                1,
+              );
+              let corrAngle = 2 * Math.acos(corrW);
+              if (corrAngle > Math.PI) {
+                corrAngle = TAU - corrAngle;
+              }
+              const corrLimit = segment.collisionCorrectionLimit || 0.42;
+              if (corrAngle > corrLimit && corrAngle > 1e-6) {
+                const keep = corrLimit / corrAngle;
+                segmentPersistentBlendQuat
+                  .copy(identityQuat)
+                  .slerp(segment.collisionCorrectionQuat, keep);
+                segment.collisionCorrectionQuat.copy(segmentPersistentBlendQuat);
+              }
+            }
+          }
+        }
+      }
+
       segment.tipPosition.copy(tipWorld);
+
+      if (!segment._runtimeCollider) {
+        segment._runtimeCollider = {
+          base: new THREE.Vector3(),
+          tip: new THREE.Vector3(),
+          radius: 0,
+          segment,
+        };
+      }
+      segment._runtimeCollider.base.copy(segment.pivot.position);
+      segment._runtimeCollider.tip.copy(tipWorld);
+      segment._runtimeCollider.radius = segmentCollisionRadius;
+      evaluatedBranchColliders.push(segment._runtimeCollider);
     }
 
     this.group.updateMatrixWorld();
@@ -2610,15 +3373,20 @@ class PlantSimulator {
           }
 
           const colliderRadius =
-            Math.max(segment.currentTopRadius, segment.currentBaseRadius) *
-            (segment.depth === 0 ? 1.04 : 1.015);
+            Math.max(segment.currentTopRadius, segment.currentBaseRadius);
           if (colliderRadius < 0.006) {
             continue;
           }
-          const colliderHeight = Math.max(0.008, segmentLength * 0.98);
+          const colliderHeight = Math.max(0.008, segmentLength);
 
           segmentColliderLocal
-            .set(0, segment.mesh.position.y + segmentLength * 0.5, 0)
+            .set(
+              0,
+              segment.mesh.position.y +
+                (segment.baseOverlap || 0) +
+                segmentLength * 0.5,
+              0,
+            )
             .applyQuaternion(segment.pivot.quaternion)
             .add(segment.pivot.position);
           segmentColliderWorld
@@ -2702,7 +3470,7 @@ class PlantSimulator {
       lifecycleStates[i] = this.computeLeafLifecycle(
         this.leaves[i],
         age,
-        elapsedSeconds,
+        lifecycleElapsedSeconds,
       );
     }
 
@@ -2712,7 +3480,7 @@ class PlantSimulator {
       15,
     );
     const flowNoise =
-      Math.sin(elapsedSeconds * 0.18 + this.settings.seed * 0.017) * 0.5 + 0.5;
+      Math.sin(lifecycleElapsedSeconds * 0.18 + this.settings.seed * 0.017) * 0.5 + 0.5;
     let preferredConcurrentFalling = 0;
     if (hardConcurrentFallCap > 0) {
       const preferredMin = Math.min(2, hardConcurrentFallCap);
@@ -2722,7 +3490,7 @@ class PlantSimulator {
     }
     if (hardConcurrentFallCap > 0 && windStrength > 0.82) {
       const gustNoise =
-        Math.sin(elapsedSeconds * 0.33 + this.settings.seed * 0.031) * 0.5 + 0.5;
+        Math.sin(lifecycleElapsedSeconds * 0.33 + this.settings.seed * 0.031) * 0.5 + 0.5;
       if (gustNoise > 0.7) {
         preferredConcurrentFalling += Math.max(
           1,
@@ -2875,6 +3643,9 @@ class PlantSimulator {
       }
 
       const growth = emergence * lifeScale;
+      if (leaf.anchorCollisionOffsetLocal && !leaf.isDetaching) {
+        leaf.anchorCollisionOffsetLocal.multiplyScalar(0.985);
+      }
 
       if (leaf.anchorSegment && leaf.anchorSurfaceLocal && leaf.localQuaternion) {
         leafAnchorSurfaceWorld
@@ -2901,11 +3672,98 @@ class PlantSimulator {
         leafBaseQuaternion.copy(leaf.baseQuaternion);
       }
 
+      if (
+        structuralCorrectionsEnabled &&
+        leaf.anchorSegment &&
+        !leaf.isDetaching &&
+        growth > 0.18 &&
+        growth < 0.995 &&
+        evaluatedBranchColliders.length > 0
+      ) {
+        const branchCollision = THREE.MathUtils.clamp(
+          (this.settings.branchCollision ?? 0.72) * structuralCorrectionWeight,
+          0,
+          1,
+        );
+        if (branchCollision > 0.001) {
+          const leafCollisionRadius = Math.max(
+            0.006,
+            (leaf.collisionRadius || 0.01) * THREE.MathUtils.clamp(growth, 0.22, 1),
+          );
+          let leafBranchHits = 0;
+
+          for (let b = 0; b < evaluatedBranchColliders.length; b += 1) {
+            const collider = evaluatedBranchColliders[b];
+            if (!collider || !collider.segment) {
+              continue;
+            }
+            if (this.areSegmentsRelated(leaf.anchorSegment, collider.segment)) {
+              continue;
+            }
+
+            const segLenSq = collider.tip.distanceToSquared(collider.base);
+            if (segLenSq < 1e-10) {
+              continue;
+            }
+
+            closestPointsOnSegments(
+              leaf.pivot.position,
+              leaf.pivot.position,
+              collider.base,
+              collider.tip,
+              leafBranchClosest,
+              leafBranchDelta,
+            );
+
+            leafBranchDelta.copy(leaf.pivot.position).sub(leafBranchDelta);
+            const distSq = leafBranchDelta.lengthSq();
+            const minDist =
+              leafCollisionRadius +
+              collider.radius * THREE.MathUtils.lerp(0.9, 1.18, branchCollision);
+
+            if (distSq >= minDist * minDist) {
+              continue;
+            }
+
+            let dist = Math.sqrt(Math.max(distSq, 1e-12));
+            if (dist < 1e-5) {
+              leafBranchDelta
+                .copy(leaf.pivot.position)
+                .sub(collider.base);
+              if (leafBranchDelta.lengthSq() < 1e-8) {
+                leafBranchDelta.set(1, 0, 0);
+              }
+              leafBranchDelta.normalize();
+              dist = 0;
+            } else {
+              leafBranchDelta.multiplyScalar(1 / dist);
+            }
+
+            const overlap = minDist - dist;
+            if (overlap > 0) {
+              leafBranchHits += 1;
+              this.lockLeafGrowthOnCollision(leaf);
+              if (leafBranchHits >= 4) {
+                break;
+              }
+            }
+          }
+
+          if (leafBranchHits > 0) {
+            // Mantener hojas pegadas a la rama: aquí solo congelamos crecimiento.
+            // La separación espacial se resuelve con podado/caída en etapas posteriores.
+          }
+        }
+      }
+
       const detached = Math.max(fall, groundDecay);
       let usedPhysicsTransform = false;
       let physicsBodyState = null;
 
       if (detached > 0) {
+        if (leaf.anchorCollisionOffsetLocal) {
+          leaf.anchorCollisionOffsetLocal.multiplyScalar(0.92);
+        }
         if (leaf.anchorSegment) {
           leafFallWorld
             .copy(leaf.fallDirectionLocal)
@@ -3152,8 +4010,10 @@ class PlantSimulator {
       this.physics.clearPlantColliders();
     }
     this.segmentGeometry.dispose();
+    this.segmentJointGeometry.dispose();
     this.leafGeometry.dispose();
     this.stemMaterial.dispose();
+    this.stemJointMaterial.dispose();
     for (let i = 0; i < this.leaves.length; i += 1) {
       this.releaseLeafPhysics(this.leaves[i]);
       this.leaves[i].mesh.material.dispose();
@@ -3174,16 +4034,24 @@ const ui = {
   fallingLeavesValue: document.getElementById("fallingLeavesValue"),
   physics: document.getElementById("physics"),
   physicsDebug: document.getElementById("physicsDebug"),
+  jointCaps: document.getElementById("jointCaps"),
   physicsStatus: document.getElementById("physicsStatus"),
   branching: document.getElementById("branching"),
   branchingValue: document.getElementById("branchingValue"),
   leafDensity: document.getElementById("leafDensity"),
   leafDensityValue: document.getElementById("leafDensityValue"),
+  branchLeaves: document.getElementById("branchLeaves"),
+  branchLeavesValue: document.getElementById("branchLeavesValue"),
+  branchSag: document.getElementById("branchSag"),
+  branchSagValue: document.getElementById("branchSagValue"),
+  branchCollision: document.getElementById("branchCollision"),
+  branchCollisionValue: document.getElementById("branchCollisionValue"),
   depth: document.getElementById("depth"),
   depthValue: document.getElementById("depthValue"),
   seed: document.getElementById("seed"),
   regenerate: document.getElementById("regenerate"),
   randomize: document.getElementById("randomize"),
+  uiToggle: document.getElementById("uiToggle"),
 };
 
 const state = {
@@ -3194,11 +4062,39 @@ const state = {
   maxConcurrentLeafFall: Number(ui.fallingLeaves.value),
   physicsEnabled: Boolean(ui.physics.checked),
   showPhysicsColliders: Boolean(ui.physicsDebug.checked),
+  showJointCaps: Boolean(ui.jointCaps.checked),
   branching: Number(ui.branching.value),
   leafDensity: Number(ui.leafDensity.value),
+  branchLeafSpread: Number(ui.branchLeaves.value),
+  branchSag: Number(ui.branchSag.value),
+  branchCollision: Number(ui.branchCollision.value),
   maxDepth: Number(ui.depth.value),
   seed: Number(ui.seed.value),
 };
+
+const mobileUiQuery = window.matchMedia("(max-width: 760px)");
+let uiPanelCollapsed = mobileUiQuery.matches;
+
+function syncMobileUiState() {
+  if (!ui.uiToggle) {
+    return;
+  }
+
+  const isMobile = mobileUiQuery.matches;
+  ui.uiToggle.hidden = !isMobile;
+
+  if (!isMobile) {
+    uiPanelCollapsed = false;
+  }
+
+  document.body.classList.toggle("ui-collapsed", isMobile && uiPanelCollapsed);
+  const expanded = !(isMobile && uiPanelCollapsed);
+  ui.uiToggle.setAttribute("aria-expanded", String(expanded));
+  ui.uiToggle.setAttribute(
+    "aria-label",
+    expanded ? "Ocultar menú" : "Mostrar menú",
+  );
+}
 
 let plant = null;
 let physicsEngine = null;
@@ -3249,7 +4145,7 @@ async function initializePhysics() {
   try {
     const engine = new AmmoPhysicsEngine({
       sampleHeightAt: sampleSurfaceHeightAt,
-      extraStaticColliders: staticPebbleColliders,
+      extraStaticColliders: staticExtraColliders,
     });
     await engine.init();
     physicsEngine = engine;
@@ -3279,6 +4175,9 @@ function syncOutputs() {
   ui.fallingLeavesValue.textContent = String(state.maxConcurrentLeafFall);
   ui.branchingValue.textContent = state.branching.toFixed(2);
   ui.leafDensityValue.textContent = state.leafDensity.toFixed(2);
+  ui.branchLeavesValue.textContent = state.branchLeafSpread.toFixed(2);
+  ui.branchSagValue.textContent = state.branchSag.toFixed(2);
+  ui.branchCollisionValue.textContent = state.branchCollision.toFixed(2);
   ui.depthValue.textContent = String(state.maxDepth);
 }
 
@@ -3296,6 +4195,10 @@ function rebuildPlant() {
     seed: state.seed,
     branching: state.branching,
     leafDensity: state.leafDensity,
+    branchLeafSpread: state.branchLeafSpread,
+    branchSag: state.branchSag,
+    branchCollision: state.branchCollision,
+    showJointCaps: state.showJointCaps,
     maxDepth: state.maxDepth,
     maxConcurrentLeafFall: state.maxConcurrentLeafFall,
     physics: activePhysics,
@@ -3305,6 +4208,15 @@ function rebuildPlant() {
 function randomSeed() {
   state.seed = Math.floor(Math.random() * 900000) + 1;
   ui.seed.value = String(state.seed);
+}
+
+function applySeedAutoGrowPreset() {
+  state.age = 0;
+  ui.growth.value = "0";
+  state.autoGrow = true;
+  ui.autoGrow.checked = true;
+  state.growthSpeed = 0.09;
+  ui.growthSpeed.value = "0.09";
 }
 
 ui.growth.addEventListener("input", () => {
@@ -3350,6 +4262,13 @@ ui.physicsDebug.addEventListener("change", () => {
   physicsDebugOverlay.setEnabled(state.showPhysicsColliders);
 });
 
+ui.jointCaps.addEventListener("change", () => {
+  state.showJointCaps = ui.jointCaps.checked;
+  if (plant) {
+    plant.settings.showJointCaps = state.showJointCaps;
+  }
+});
+
 ui.branching.addEventListener("input", () => {
   state.branching = Number(ui.branching.value);
   syncOutputs();
@@ -3357,6 +4276,27 @@ ui.branching.addEventListener("input", () => {
 
 ui.leafDensity.addEventListener("input", () => {
   state.leafDensity = Number(ui.leafDensity.value);
+  syncOutputs();
+});
+
+ui.branchLeaves.addEventListener("input", () => {
+  state.branchLeafSpread = Number(ui.branchLeaves.value);
+  syncOutputs();
+});
+
+ui.branchSag.addEventListener("input", () => {
+  state.branchSag = Number(ui.branchSag.value);
+  if (plant) {
+    plant.settings.branchSag = THREE.MathUtils.clamp(state.branchSag, 0, 1);
+  }
+  syncOutputs();
+});
+
+ui.branchCollision.addEventListener("input", () => {
+  state.branchCollision = Number(ui.branchCollision.value);
+  if (plant) {
+    plant.settings.branchCollision = THREE.MathUtils.clamp(state.branchCollision, 0, 1);
+  }
   syncOutputs();
 });
 
@@ -3373,6 +4313,8 @@ ui.seed.addEventListener("change", () => {
     state.seed = Math.floor(value);
   }
   ui.seed.value = String(state.seed);
+  applySeedAutoGrowPreset();
+  syncOutputs();
 });
 
 ui.regenerate.addEventListener("click", () => {
@@ -3384,13 +4326,38 @@ ui.regenerate.addEventListener("click", () => {
 
 ui.randomize.addEventListener("click", () => {
   randomSeed();
-  state.age = 0;
-  ui.growth.value = "0";
+  applySeedAutoGrowPreset();
   syncOutputs();
   rebuildPlant();
 });
 
-const structuralControls = [ui.branching, ui.leafDensity, ui.depth, ui.seed];
+if (ui.uiToggle) {
+  ui.uiToggle.addEventListener("click", () => {
+    if (!mobileUiQuery.matches) {
+      return;
+    }
+    uiPanelCollapsed = !uiPanelCollapsed;
+    syncMobileUiState();
+  });
+}
+
+if (typeof mobileUiQuery.addEventListener === "function") {
+  mobileUiQuery.addEventListener("change", () => {
+    if (!mobileUiQuery.matches) {
+      uiPanelCollapsed = false;
+    }
+    syncMobileUiState();
+  });
+} else if (typeof mobileUiQuery.addListener === "function") {
+  mobileUiQuery.addListener(() => {
+    if (!mobileUiQuery.matches) {
+      uiPanelCollapsed = false;
+    }
+    syncMobileUiState();
+  });
+}
+
+const structuralControls = [ui.branching, ui.leafDensity, ui.branchLeaves, ui.depth, ui.seed];
 for (let i = 0; i < structuralControls.length; i += 1) {
   structuralControls[i].addEventListener("change", () => {
     rebuildPlant();
@@ -3398,6 +4365,7 @@ for (let i = 0; i < structuralControls.length; i += 1) {
 }
 
 syncOutputs();
+syncMobileUiState();
 refreshPhysicsStatus();
 physicsDebugOverlay.setEnabled(state.showPhysicsColliders);
 rebuildPlant();

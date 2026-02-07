@@ -233,8 +233,8 @@ export class AmmoPhysicsEngine {
     if (hasTriangleMesh) {
       this._addTerrainMesh();
     } else {
-      const terrainCoverage = 7.2;
-      const step = 0.48;
+      const terrainCoverage = 14;
+      const step = 0.45;
       const halfCells = Math.ceil(terrainCoverage / step);
       const thickness = 0.68;
 
@@ -262,9 +262,6 @@ export class AmmoPhysicsEngine {
       0.01,
       false,
     );
-
-    // Paredes laterales de la tierra para evitar caídas por el borde del montículo.
-    this._addStaticCylinder({ x: 0, y: 0.12, z: 0 }, 0.86, 0.26, 1.02, 0.02);
 
     for (let i = 0; i < this.extraStaticColliders.length; i += 1) {
       const collider = this.extraStaticColliders[i];
@@ -302,8 +299,8 @@ export class AmmoPhysicsEngine {
     const Ammo = this.Ammo;
 
     // Malla triangular estática: sigue la misma función de altura del render.
-    const resolution = 88;
-    const size = 14;
+    const resolution = 112;
+    const size = 28;
     const step = size / resolution;
     const halfSize = size * 0.5;
 
@@ -394,7 +391,7 @@ export class AmmoPhysicsEngine {
     );
     const shape = new Ammo.btBoxShape(halfExtentsVector);
     Ammo.destroy(halfExtentsVector);
-    setShapeMarginIfSupported(shape, 0.002);
+    setShapeMarginIfSupported(shape, 0.001);
     this.staticShapes.push(shape);
     if (debug) {
       this.debugStaticColliders.push({
@@ -423,7 +420,7 @@ export class AmmoPhysicsEngine {
     const halfExtentsVector = new Ammo.btVector3(radius, height * 0.5, radius);
     const shape = new Ammo.btCylinderShape(halfExtentsVector);
     Ammo.destroy(halfExtentsVector);
-    setShapeMarginIfSupported(shape, 0.002);
+    setShapeMarginIfSupported(shape, 0.001);
     this.staticShapes.push(shape);
     this.debugStaticColliders.push({
       type: "cylinder",
@@ -643,7 +640,7 @@ export class AmmoPhysicsEngine {
     } else {
       shape = new this.Ammo.btSphereShape(radius);
     }
-    setShapeMarginIfSupported(shape, 0.0015);
+    setShapeMarginIfSupported(shape, 0.0008);
 
     const descriptor = {
       key,
