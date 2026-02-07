@@ -142,12 +142,42 @@ function sampleSurfaceHeightAt(x, z) {
   return Math.max(sampleGroundHeightAt(x, z), sampleSoilHeightAt(x, z));
 }
 
+const isCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+const userAgent = navigator.userAgent || "";
+const isMobileUa = /Android|iPhone|iPad|iPod|Mobi/i.test(userAgent);
+const cpuCores = Number.isFinite(navigator.hardwareConcurrency)
+  ? navigator.hardwareConcurrency
+  : 8;
+const lowPowerMode = isCoarsePointer || isMobileUa || cpuCores <= 4;
+
+const PERFORMANCE_PROFILE = lowPowerMode
+  ? {
+      lowPowerMode: true,
+      antialias: false,
+      pixelRatioCap: 1.15,
+      shadowType: THREE.BasicShadowMap,
+      keyShadowMapSize: 1024,
+      atmosphereCount: 120,
+    }
+  : {
+      lowPowerMode: false,
+      antialias: true,
+      pixelRatioCap: 2,
+      shadowType: THREE.PCFSoftShadowMap,
+      keyShadowMapSize: 2048,
+      atmosphereCount: 280,
+    };
+
 const canvas = document.getElementById("sim");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: PERFORMANCE_PROFILE.antialias,
+  powerPreference: "high-performance",
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERFORMANCE_PROFILE.pixelRatioCap));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = PERFORMANCE_PROFILE.shadowType;
 renderer.physicallyCorrectLights = true;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -179,7 +209,10 @@ scene.add(hemiLight);
 const keyLight = new THREE.DirectionalLight(0xfff2d6, 2.85);
 keyLight.position.set(5.8, 8.4, 3.4);
 keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.mapSize.set(
+  PERFORMANCE_PROFILE.keyShadowMapSize,
+  PERFORMANCE_PROFILE.keyShadowMapSize,
+);
 keyLight.shadow.camera.left = -6;
 keyLight.shadow.camera.right = 6;
 keyLight.shadow.camera.top = 6;
@@ -591,7 +624,7 @@ function createGround() {
 }
 
 function createAtmosphereParticles() {
-  const count = 280;
+  const count = PERFORMANCE_PROFILE.atmosphereCount;
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(count * 3);
   for (let i = 0; i < count; i += 1) {
@@ -1119,6 +1152,7 @@ class PlantSimulator {
       1,
     );
     this.settings.showJointCaps = this.settings.showJointCaps !== false;
+    this.settings.lowPowerMode = Boolean(this.settings.lowPowerMode);
     this.rng = seededRandom(settings.seed);
     this.group = new THREE.Group();
     this.scene.add(this.group);
@@ -1130,17 +1164,21 @@ class PlantSimulator {
     this.anchorLeafSectorCount = new Map();
     this.leafSpatialDensity = new Map();
     this.seedLeavesCreated = false;
-    this.maxLeafBudget = 500;
+    this.maxLeafBudget = this.settings.lowPowerMode ? 320 : 500;
     this.structureScale = 1 + Math.max(0, this.settings.maxDepth - 4) * 0.09;
     this.leafCellSize = 0.42 + this.structureScale * 0.17;
     this.maxLeavesPerCellBase = 4 + Math.round(this.settings.leafDensity * 1.7);
-    this.segmentBudget = Math.round(760 + this.settings.maxDepth * 115);
+    const baseSegmentBudget = Math.round(760 + this.settings.maxDepth * 115);
+    this.segmentBudget = this.settings.lowPowerMode
+      ? Math.round(baseSegmentBudget * 0.72)
+      : baseSegmentBudget;
     this.segmentCount = 0;
     this.lastUpdateTime = null;
     this._lifecycleStartTime = null;
     this._lastPlantColliderSyncTime = null;
-    this._plantColliderSyncInterval = 1 / 30;
-    this._maxAttachedLeafColliders = 160;
+    this._plantColliderSyncInterval = this.settings.lowPowerMode ? 1 / 20 : 1 / 30;
+    this._maxAttachedLeafColliders = this.settings.lowPowerMode ? 90 : 160;
+    this._collisionCheckInterval = this.settings.lowPowerMode ? 45 : 30;
     this.physics = settings.physics || null;
     this._leafCollisionWorldA = new THREE.Vector3();
     this._leafCollisionWorldB = new THREE.Vector3();
@@ -3512,7 +3550,11 @@ class PlantSimulator {
     // Throttle to every ~30 frames for performance
     if (!this._collisionFrame) this._collisionFrame = 0;
     this._collisionFrame += 1;
-    if (this._collisionFrame % 30 === 0 || this._collisionFrame === 1) {
+    const collisionCheckInterval = Math.max(1, this._collisionCheckInterval || 30);
+    if (
+      this._collisionFrame % collisionCheckInterval === 0 ||
+      this._collisionFrame === 1
+    ) {
       this.checkRuntimeCollisions();
     }
 
@@ -4250,6 +4292,7 @@ function rebuildPlant() {
     branchSag: state.branchSag,
     branchCollision: state.branchCollision,
     showJointCaps: state.showJointCaps,
+    lowPowerMode: PERFORMANCE_PROFILE.lowPowerMode,
     maxDepth: state.maxDepth,
     maxConcurrentLeafFall: state.maxConcurrentLeafFall,
     physics: activePhysics,
@@ -4460,7 +4503,7 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERFORMANCE_PROFILE.pixelRatioCap));
 });
 
 function disposeVisualAssets() {
