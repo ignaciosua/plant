@@ -151,7 +151,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.physicallyCorrectLights = true;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.12;
+renderer.toneMappingExposure = 1.2;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0xaec8b2, 9, 26);
@@ -173,10 +173,10 @@ controls.maxDistance = 10.5;
 controls.maxPolarAngle = Math.PI * 0.48;
 controls.minPolarAngle = Math.PI * 0.14;
 
-const hemiLight = new THREE.HemisphereLight(0xd9f4ff, 0x64513c, 1.2);
+const hemiLight = new THREE.HemisphereLight(0xd9f4ff, 0x64513c, 1.34);
 scene.add(hemiLight);
 
-const keyLight = new THREE.DirectionalLight(0xfff2d6, 2.6);
+const keyLight = new THREE.DirectionalLight(0xfff2d6, 2.85);
 keyLight.position.set(5.8, 8.4, 3.4);
 keyLight.castShadow = true;
 keyLight.shadow.mapSize.set(2048, 2048);
@@ -189,11 +189,11 @@ keyLight.shadow.camera.far = 24;
 keyLight.shadow.bias = -0.0002;
 scene.add(keyLight);
 
-const rimLight = new THREE.DirectionalLight(0xc2ebff, 0.72);
+const rimLight = new THREE.DirectionalLight(0xc2ebff, 0.86);
 rimLight.position.set(-5.5, 4.6, -3.4);
 scene.add(rimLight);
 
-const fillLight = new THREE.DirectionalLight(0xc8dcff, 0.46);
+const fillLight = new THREE.DirectionalLight(0xc8dcff, 0.62);
 fillLight.position.set(-2.5, 3.4, 4.8);
 scene.add(fillLight);
 
@@ -287,10 +287,10 @@ function createVisualTextures(rendererRef) {
       const waviness = fbm2(v * 4.5, u * 2.2, 89, 3) * 0.08;
       const stripe = Math.abs(Math.sin((u + waviness) * 62));
       const grain = fbm2(u * 42, v * 12, 97, 4);
-      const base = 58 + grain * 64 - stripe * 18;
-      const r = base + 21;
-      const g = base + 12;
-      const b = base + 2;
+      const base = 82 + grain * 68 - stripe * 14;
+      const r = base + 27;
+      const g = base + 18;
+      const b = base + 7;
       return { r, g, b, a: 255 };
     },
   );
@@ -1031,6 +1031,9 @@ class PlantSimulator {
     this.segmentBudget = Math.round(760 + this.settings.maxDepth * 115);
     this.segmentCount = 0;
     this.lastUpdateTime = null;
+    this._lastPlantColliderSyncTime = null;
+    this._plantColliderSyncInterval = 1 / 30;
+    this._maxAttachedLeafColliders = 160;
     this.physics = settings.physics || null;
 
     this.segmentGeometry = new THREE.CylinderGeometry(
@@ -1053,9 +1056,9 @@ class PlantSimulator {
       const radial = Math.sqrt(x * x + z * z);
       const heightTone = THREE.MathUtils.clamp(y, 0, 1);
       stemColor.setHSL(
-        0.28 + (this.rng() - 0.5) * 0.015,
-        0.28 + this.rng() * 0.1,
-        0.2 + heightTone * 0.15 - radial * 0.04 + this.rng() * 0.04,
+        0.26 + (this.rng() - 0.5) * 0.012,
+        0.2 + this.rng() * 0.08,
+        0.31 + heightTone * 0.19 - radial * 0.018 + this.rng() * 0.05,
       );
       stemColors[i * 3] = stemColor.r;
       stemColors[i * 3 + 1] = stemColor.g;
@@ -1068,25 +1071,27 @@ class PlantSimulator {
     this.stemMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
       map: visualTextures.barkMap,
-      roughness: 0.84,
+      roughness: 0.72,
       metalness: 0.02,
       clearcoat: 0.16,
-      clearcoatRoughness: 0.78,
+      clearcoatRoughness: 0.65,
+      emissive: 0x24170f,
+      emissiveIntensity: 0.045,
       vertexColors: true,
     });
 
     this.leafMaterial = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
       map: visualTextures.leafMap,
-      roughness: 0.61,
+      roughness: 0.56,
       metalness: 0.01,
-      clearcoat: 0.08,
-      clearcoatRoughness: 0.82,
-      transmission: 0.06,
-      thickness: 0.2,
+      clearcoat: 0.11,
+      clearcoatRoughness: 0.75,
+      transmission: 0.08,
+      thickness: 0.24,
       side: THREE.DoubleSide,
       emissive: 0x102214,
-      emissiveIntensity: 0.06,
+      emissiveIntensity: 0.07,
       vertexColors: true,
       opacity: 0.96,
       transparent: true,
@@ -1355,10 +1360,13 @@ class PlantSimulator {
     const depthRatio = depth / Math.max(1, this.settings.maxDepth);
     // Todas las ramas (depth >= 1) obtienen hojas en su punta
     if (depth >= 1 && previousSegment) {
-      // Hoja de punta nace cuando la rama empieza, con duración larga 
-      // para que crezca junto con la rama completa
-      const tipLeafBirth = birthStart + growthSpan * 0.15;
-      const tipLeafDurationOverride = growthSpan * 0.7;
+      // Hacer que la hoja de punta nazca cerca del final de la rama evita
+      // "pops" cuando aparecen ramas largas en etapas tardías.
+      const tipLeafBirth = birthStart + growthSpan * (0.72 + this.rng() * 0.12);
+      const tipLeafEmergenceDuration = Math.max(
+        0.62,
+        growthSpan * (0.62 + this.rng() * 0.24),
+      );
 
       // FORZAR hoja directa en la punta — sin filtros, sin cluster, sin límites
       const tipDir = currentDirection
@@ -1379,6 +1387,7 @@ class PlantSimulator {
         false,
         1,
         true, // force = true, salta presupuesto
+        tipLeafEmergenceDuration,
       );
 
       // Cluster adicional en la punta
@@ -1397,6 +1406,7 @@ class PlantSimulator {
         false,
         1,
         true,
+        tipLeafEmergenceDuration,
       );
     }
   }
@@ -1481,11 +1491,25 @@ class PlantSimulator {
     this.leafSpatialDensity.set(key, current + 1);
   }
 
+  lockLeafGrowthOnCollision(leaf) {
+    if (!leaf || leaf.isDetaching || leaf.collisionForceDetach) {
+      return;
+    }
+    const currentGrowth = THREE.MathUtils.clamp(
+      Number.isFinite(leaf.currentGrowth) ? leaf.currentGrowth : 0,
+      0,
+      1,
+    );
+    const freezeAt = Math.max(0.2, currentGrowth);
+    leaf.collisionGrowthLimit = Math.min(
+      Number.isFinite(leaf.collisionGrowthLimit) ? leaf.collisionGrowthLimit : 1,
+      freezeAt,
+    );
+  }
+
   /**
-   * When a new leaf is placed, check all existing leaves for proximity.
-   * Any old leaf within the collision radius is forced to detach and fall.
-   * Uses local (group-space) positions since matrixWorld may not be updated during construction.
-   * Only collides leaves from DIFFERENT anchor segments (same-cluster overlap is expected).
+   * When a new leaf is placed, freeze growth for nearby leaves so they stop
+   * expanding into each other.
    */
   triggerCollisionFalls(newPosition, newAnchorSegment) {
     const COLLISION_RADIUS = 0.06; // local-space distance threshold
@@ -1493,88 +1517,118 @@ class PlantSimulator {
 
     for (let i = 0; i < this.leaves.length; i += 1) {
       const leaf = this.leaves[i];
-      // Skip leaves already falling/detaching or on ground
-      if (leaf.collisionForceDetach || leaf.isDetaching) continue;
-
-      // Skip leaves on the SAME anchor segment (they're part of the same cluster)
+      if (leaf.isDetaching) continue;
       if (newAnchorSegment && leaf.anchorSegment === newAnchorSegment) continue;
-
-      // Use local position (pivot.position) — both are in the same group-local space.
-      // matrixWorld is NOT valid during construction (stale identity matrix).
       const distSq = leaf.pivot.position.distanceToSquared(newPosition);
-
       if (distSq < COLLISION_RADIUS_SQ && distSq > 0.00001) {
-        leaf.collisionForceDetach = true;
-        leaf.isDetaching = true;
+        this.lockLeafGrowthOnCollision(leaf);
       }
     }
   }
 
   /**
-   * Runtime collision check: called each frame to detect overlapping visible leaves.
-   * When two visible (non-hidden, non-falling) leaves from different anchors overlap,
-   * the older one is forced to fall.
+   * Runtime collision check:
+   * - overlap normal: congela crecimiento para evitar interpenetración.
+   * - overlap fuerte entre hojas ya maduras: fuerza caída de la menos prioritaria.
    */
   checkRuntimeCollisions() {
     const COLLISION_RADIUS = 0.06;
     const COLLISION_RADIUS_SQ = COLLISION_RADIUS * COLLISION_RADIUS;
+    const HARD_OVERLAP_RADIUS = 0.045;
+    const HARD_OVERLAP_RADIUS_SQ = HARD_OVERLAP_RADIUS * HARD_OVERLAP_RADIUS;
+    const invCellSize = 1 / (COLLISION_RADIUS * 1.35);
+    const buckets = new Map();
+    const activeIndices = [];
+    const neighborOffsets = [];
 
-    for (let i = 0; i < this.leaves.length; i += 1) {
-      const a = this.leaves[i];
-      if (a.collisionForceDetach || a.isDetaching) continue;
-      if (a.mesh.scale.x < 0.01) continue;
-
-      for (let j = i + 1; j < this.leaves.length; j += 1) {
-        const b = this.leaves[j];
-        if (b.collisionForceDetach || b.isDetaching) continue;
-        if (b.mesh.scale.x < 0.01) continue;
-
-        if (a.anchorSegment && a.anchorSegment === b.anchorSegment) continue;
-
-        const distSq = a.pivot.position.distanceToSquared(b.pivot.position);
-        if (distSq < COLLISION_RADIUS_SQ && distSq > 0.00001) {
-          a.collisionForceDetach = true;
-          a.isDetaching = true;
-          break;
+    for (let dz = -1; dz <= 1; dz += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          neighborOffsets.push([dx, dy, dz]);
         }
       }
     }
-  }
 
-  /**
-   * For remaining visible leaves that are near neighbors (but not close enough
-   * to trigger full collision pruning), compute a shrink factor so they don't
-   * visually overlap. The closer two leaves are, the more both get shrunk.
-   */
-  computeCollisionShrink() {
-    const SHRINK_RADIUS = 0.12;  // proximity range where shrinking kicks in
-    const SHRINK_RADIUS_SQ = SHRINK_RADIUS * SHRINK_RADIUS;
-    const MIN_SHRINK = 0.38;     // smallest allowed scale factor
-
-    // Reset all shrink factors
     for (let i = 0; i < this.leaves.length; i += 1) {
-      this.leaves[i]._collisionShrink = 1;
+      const leaf = this.leaves[i];
+      if (leaf.isDetaching) continue;
+      if (leaf.mesh.scale.x < 0.01) continue;
+      const cx = Math.floor(leaf.pivot.position.x * invCellSize);
+      const cy = Math.floor(leaf.pivot.position.y * invCellSize);
+      const cz = Math.floor(leaf.pivot.position.z * invCellSize);
+      leaf._collisionCellX = cx;
+      leaf._collisionCellY = cy;
+      leaf._collisionCellZ = cz;
+      const key = `${cx}|${cy}|${cz}`;
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+      }
+      buckets.get(key).push(i);
+      activeIndices.push(i);
     }
 
-    for (let i = 0; i < this.leaves.length; i += 1) {
+    for (let n = 0; n < activeIndices.length; n += 1) {
+      const i = activeIndices[n];
       const a = this.leaves[i];
-      if (a.collisionForceDetach || a.isDetaching) continue;
-      if (a.mesh.scale.x < 0.01) continue;
+      const ax = a._collisionCellX;
+      const ay = a._collisionCellY;
+      const az = a._collisionCellZ;
 
-      for (let j = i + 1; j < this.leaves.length; j += 1) {
-        const b = this.leaves[j];
-        if (b.collisionForceDetach || b.isDetaching) continue;
-        if (b.mesh.scale.x < 0.01) continue;
+      for (let k = 0; k < neighborOffsets.length; k += 1) {
+        const offset = neighborOffsets[k];
+        const key = `${ax + offset[0]}|${ay + offset[1]}|${az + offset[2]}`;
+        const bucket = buckets.get(key);
+        if (!bucket) {
+          continue;
+        }
 
-        const distSq = a.pivot.position.distanceToSquared(b.pivot.position);
-        if (distSq < SHRINK_RADIUS_SQ && distSq > 0.00001) {
-          const dist = Math.sqrt(distSq);
-          // 0 at center → 1 at edge of radius
-          const proximity = 1 - dist / SHRINK_RADIUS;
-          // Scale down proportionally: closer = smaller
-          const shrink = THREE.MathUtils.lerp(1, MIN_SHRINK, proximity);
-          a._collisionShrink = Math.min(a._collisionShrink, shrink);
-          b._collisionShrink = Math.min(b._collisionShrink, shrink);
+        for (let bIndex = 0; bIndex < bucket.length; bIndex += 1) {
+          const j = bucket[bIndex];
+          if (j <= i) {
+            continue;
+          }
+          const b = this.leaves[j];
+          if (!b || b.isDetaching || b.mesh.scale.x < 0.01) {
+            continue;
+          }
+          if (a.anchorSegment && a.anchorSegment === b.anchorSegment) continue;
+
+          const distSq = a.pivot.position.distanceToSquared(b.pivot.position);
+          if (distSq >= COLLISION_RADIUS_SQ || distSq <= 0.00001) {
+            continue;
+          }
+
+          this.lockLeafGrowthOnCollision(a);
+          this.lockLeafGrowthOnCollision(b);
+
+          const aGrowth = THREE.MathUtils.clamp(
+            Number.isFinite(a.currentGrowth) ? a.currentGrowth : 0,
+            0,
+            1,
+          );
+          const bGrowth = THREE.MathUtils.clamp(
+            Number.isFinite(b.currentGrowth) ? b.currentGrowth : 0,
+            0,
+            1,
+          );
+          if (
+            distSq < HARD_OVERLAP_RADIUS_SQ &&
+            aGrowth > 0.82 &&
+            bGrowth > 0.82
+          ) {
+            const aPriority = Number.isFinite(a.tipPriority) ? a.tipPriority : 0.5;
+            const bPriority = Number.isFinite(b.tipPriority) ? b.tipPriority : 0.5;
+            let drop = null;
+            if (Math.abs(aPriority - bPriority) > 0.03) {
+              drop = aPriority < bPriority ? a : b;
+            } else {
+              drop = (a.birth || 0) <= (b.birth || 0) ? a : b;
+            }
+            if (drop && !drop.isDetaching && !drop.collisionForceDetach) {
+              drop.collisionForceDetach = true;
+              drop.isDetaching = true;
+            }
+          }
         }
       }
     }
@@ -1590,6 +1644,7 @@ class PlantSimulator {
     forceEarlyActive = false,
     clusterPriority = 0.5,
     guaranteeTip = false,
+    emergenceDurationOverride = null,
   ) {
     const priority = guaranteeTip
       ? 1
@@ -1829,6 +1884,7 @@ class PlantSimulator {
         forceEarlyActive,
         priority,
         guaranteeTip,
+        emergenceDurationOverride,
       );
       if (!created) {
         if (guaranteeTip) continue; // seguir intentando si es hoja garantizada
@@ -1923,6 +1979,7 @@ class PlantSimulator {
     forceEarlyActive = false,
     tipPriority = 0.5,
     force = false,
+    emergenceDurationOverride = null,
   ) {
     if (!force && this.leaves.length >= this.maxLeafBudget) {
       return false;
@@ -1943,9 +2000,27 @@ class PlantSimulator {
     mesh.scale.set(0.0001, 0.0001, 0.0001);
     pivot.add(mesh);
 
-    const lengthScale = 0.28 + this.rng() * 0.26;
+    const depthNorm = THREE.MathUtils.clamp(
+      depth / Math.max(1, this.settings.maxDepth),
+      0,
+      1,
+    );
+    const centerLeafBoost = THREE.MathUtils.lerp(1.34, 0.9, depthNorm);
+    const lengthScale = THREE.MathUtils.clamp(
+      (0.28 + this.rng() * 0.26) * centerLeafBoost,
+      0.24,
+      0.78,
+    );
     const widthScale = lengthScale * (0.56 + this.rng() * 0.45);
     const thicknessScale = lengthScale * (0.82 + this.rng() * 0.32);
+    const tipGuard = smooth01(
+      (THREE.MathUtils.clamp(tipPriority, 0, 1) - 0.72) / 0.28,
+    );
+    const ramificationPruneBias = THREE.MathUtils.clamp(
+      (1 - depthNorm) * (1 - tipGuard) * (0.82 + this.rng() * 0.26),
+      0,
+      1,
+    );
     let localQuaternion = null;
     let anchorSurfaceLocal = null;
     let fallDirectionLocal = new THREE.Vector3(
@@ -1991,11 +2066,11 @@ class PlantSimulator {
         .normalize();
     }
 
-    const lifeGrowDuration = 1.4 + this.rng() * 1.2;
-    const lifeMatureDuration = 6.5 + this.rng() * 7.2;
-    const lifeSenescenceDuration = 2.2 + this.rng() * 2;
-    const lifeFallDuration = 2.8 + this.rng() * 2.4;
-    const lifeDormancyDuration = 2.3 + this.rng() * 3.4;
+    const lifeGrowDuration = 1.85 + this.rng() * 1.2;
+    const lifeMatureDuration = 4.1 + this.rng() * 4.2;
+    const lifeSenescenceDuration = 1.7 + this.rng() * 1.5;
+    const lifeFallDuration = 2 + this.rng() * 1.8;
+    const lifeDormancyDuration = 1.7 + this.rng() * 2.2;
     const lifeCycleDuration =
       lifeGrowDuration +
       lifeMatureDuration +
@@ -2006,6 +2081,11 @@ class PlantSimulator {
     const lifeOffset = forceEarlyActive
       ? this.rng() * Math.max(0.0001, lifeGrowDuration * 0.55)
       : this.rng() * lifeActiveWindow;
+
+    const emergenceDuration = Number.isFinite(emergenceDurationOverride) &&
+      emergenceDurationOverride > 0
+      ? emergenceDurationOverride
+      : 0.62 + this.rng() * 0.45 + Math.min(0.28, depth * 0.05);
 
     this.group.add(pivot);
     this.leaves.push({
@@ -2018,7 +2098,7 @@ class PlantSimulator {
       anchorAxialOffset,
       anchorRadialLift,
       birth,
-      duration: 0.2 + this.rng() * 0.12,
+      duration: emergenceDuration,
       finalScale: new THREE.Vector3(widthScale, lengthScale, thicknessScale),
       depth,
       swayAmplitude: 0.1 + this.rng() * 0.18,
@@ -2027,6 +2107,9 @@ class PlantSimulator {
       bendAvoid: crowding * (0.22 + this.rng() * 0.26),
       colorVariance,
       tipPriority: THREE.MathUtils.clamp(tipPriority, 0, 1),
+      ramificationPruneBias,
+      collisionGrowthLimit: 1,
+      currentGrowth: 0,
       fallPriority: this.rng(),
       isSeedLeaf: forceEarlyActive,
       isDetaching: false,
@@ -2060,7 +2143,7 @@ class PlantSimulator {
       physicsLockedScale: null,
     });
 
-    // Check if this new leaf collides with any existing old leaf and trigger their fall
+    // Freeze growth immediately if this leaf spawns overlapping neighbors.
     this.triggerCollisionFalls(position, anchorSegment);
 
     return true;
@@ -2199,7 +2282,10 @@ class PlantSimulator {
     } else {
       const lifeTime =
         Math.max(0, elapsedSeconds - (leaf.timeHold || 0)) + leaf.lifeOffset;
-      const phase = lifeTime % leaf.lifeCycleDuration;
+      const phase = Math.min(
+        lifeTime,
+        leaf.lifeCycleDuration - 0.0001,
+      );
       const growEnd = leaf.lifeGrowDuration;
       const matureEnd = growEnd + leaf.lifeMatureDuration;
       const senescenceEnd = matureEnd + leaf.lifeSenescenceDuration;
@@ -2245,13 +2331,25 @@ class PlantSimulator {
 
       const tipPriority = leaf.tipPriority ?? 0.5;
       if (tipPriority >= 0.92) {
-        // Hoja terminal persistente: evita puntas vacías.
-        stage = hidden ? "mature" : stage;
+        // Hoja terminal persistente: evita puntas vacías, pero en lugar de
+        // reaparecer de golpe vuelve a brotar con una fase de crecimiento.
         hidden = false;
         groundDecay = 0;
-        fall = Math.min(fall, 0.08);
-        senescence *= 0.35;
-        lifeScale = Math.max(lifeScale, 0.72 + smooth01(age) * 0.28);
+        if (phase >= fallEnd) {
+          const regrowT = THREE.MathUtils.clamp(
+            (phase - fallEnd) / Math.max(0.0001, hiddenEnd - fallEnd),
+            0,
+            1,
+          );
+          stage = "grow";
+          senescence *= 0.2;
+          fall = Math.min(fall, 0.16 * (1 - regrowT));
+          lifeScale = smooth01(regrowT);
+        } else {
+          fall = Math.min(fall, 0.05);
+          senescence *= 0.32;
+          lifeScale = Math.max(lifeScale, 0.14 + smooth01(age) * 0.18);
+        }
       } else {
         // Hojas internas: conforme crece la planta, se desprenden gradualmente.
         const interiorFactor = THREE.MathUtils.clamp((0.74 - tipPriority) / 0.74, 0, 1);
@@ -2280,6 +2378,50 @@ class PlantSimulator {
               );
             }
             if (shedProgress > 0.985) {
+              stage = "hidden";
+              hidden = true;
+              groundDecay = 1;
+              lifeScale = 0;
+            }
+          }
+        }
+
+        // Poda estructural: al aumentar ramificaciones, hojas grandes del centro
+        // envejecen y caen antes para abrir espacio a brotes nuevos.
+        const pruneBias = THREE.MathUtils.clamp(
+          leaf.ramificationPruneBias || 0,
+          0,
+          1,
+        );
+        if (pruneBias > 0.08) {
+          const structuralStart = THREE.MathUtils.lerp(0.64, 0.28, pruneBias);
+          if (age > structuralStart) {
+            const structuralDuration = Math.max(0.1, 0.74 - pruneBias * 0.36);
+            const structuralProgress = THREE.MathUtils.clamp(
+              (age - structuralStart) / structuralDuration,
+              0,
+              1,
+            );
+            const structuralFall = smooth01((structuralProgress - 0.18) / 0.52) * pruneBias;
+            senescence = Math.max(
+              senescence,
+              structuralProgress * (0.65 + pruneBias * 0.35),
+            );
+            fall = Math.max(fall, structuralFall);
+            lifeScale = Math.min(
+              lifeScale,
+              Math.max(0, 1 - structuralProgress * (0.5 + pruneBias * 0.42)),
+            );
+
+            if (structuralProgress > 0.72) {
+              stage = "ground";
+              fall = 1;
+              groundDecay = Math.max(
+                groundDecay,
+                smooth01((structuralProgress - 0.72) / 0.28),
+              );
+            }
+            if (structuralProgress > 0.995) {
               stage = "hidden";
               hidden = true;
               groundDecay = 1;
@@ -2453,56 +2595,94 @@ class PlantSimulator {
     inverseGroupWorldQuaternion.copy(groupWorldQuaternion).invert();
 
     if (this.physics && this.physics.ready) {
-      plantColliders.length = 0;
-      for (let i = 0; i < this.segments.length; i += 1) {
-        const segment = this.segments[i];
-        if (segment.depth > 1) {
-          continue;
+      const shouldSyncPlantColliders =
+        this._lastPlantColliderSyncTime === null ||
+        elapsedSeconds - this._lastPlantColliderSyncTime >=
+          this._plantColliderSyncInterval;
+
+      if (shouldSyncPlantColliders) {
+        plantColliders.length = 0;
+        for (let i = 0; i < this.segments.length; i += 1) {
+          const segment = this.segments[i];
+          const segmentLength = segment.currentLength || 0;
+          if (segmentLength < 0.008) {
+            continue;
+          }
+
+          const colliderRadius =
+            Math.max(segment.currentTopRadius, segment.currentBaseRadius) *
+            (segment.depth === 0 ? 1.04 : 1.015);
+          if (colliderRadius < 0.006) {
+            continue;
+          }
+          const colliderHeight = Math.max(0.008, segmentLength * 0.98);
+
+          segmentColliderLocal
+            .set(0, segment.mesh.position.y + segmentLength * 0.5, 0)
+            .applyQuaternion(segment.pivot.quaternion)
+            .add(segment.pivot.position);
+          segmentColliderWorld
+            .copy(segmentColliderLocal)
+            .applyMatrix4(this.group.matrixWorld);
+          segmentColliderWorldQuaternion
+            .copy(groupWorldQuaternion)
+            .multiply(segment.pivot.quaternion)
+            .normalize();
+
+          plantColliders.push({
+            id: `seg-${i}`,
+            type: "cylinder",
+            x: segmentColliderWorld.x,
+            y: segmentColliderWorld.y,
+            z: segmentColliderWorld.z,
+            radius: colliderRadius,
+            height: colliderHeight,
+            quaternion: {
+              x: segmentColliderWorldQuaternion.x,
+              y: segmentColliderWorldQuaternion.y,
+              z: segmentColliderWorldQuaternion.z,
+              w: segmentColliderWorldQuaternion.w,
+            },
+          });
         }
 
-        const segmentLength = segment.currentLength || 0;
-        if (segmentLength < 0.02) {
-          continue;
+        // Colliders cinemáticos para hojas adheridas (mientras no estén cayendo).
+        // Mejora cobertura de colisión y visualización en el debug overlay.
+        let attachedLeafColliders = 0;
+        for (let i = 0; i < this.leaves.length; i += 1) {
+          if (attachedLeafColliders >= this._maxAttachedLeafColliders) {
+            break;
+          }
+          const leaf = this.leaves[i];
+          if (!leaf || leaf.isDetaching || leaf.physicsHandle) {
+            continue;
+          }
+          const sx = leaf.mesh.scale.x || 0;
+          const sy = leaf.mesh.scale.y || 0;
+          const sz = leaf.mesh.scale.z || 0;
+          const growthScale = Math.max(sx, sy, sz);
+          if (growthScale < 0.015) {
+            continue;
+          }
+
+          physicsPositionWorld.copy(leaf.pivot.position).applyMatrix4(this.group.matrixWorld);
+          plantColliders.push({
+            id: `leaf-${i}`,
+            type: "sphere",
+            x: physicsPositionWorld.x,
+            y: physicsPositionWorld.y,
+            z: physicsPositionWorld.z,
+            radius: Math.max(
+              0.0045,
+              (leaf.collisionRadius || 0.01) * THREE.MathUtils.clamp(growthScale, 0.16, 1),
+            ),
+          });
+          attachedLeafColliders += 1;
         }
 
-        const colliderRadius =
-          Math.max(segment.currentTopRadius, segment.currentBaseRadius) *
-          (segment.depth === 0 ? 1.04 : 1.02);
-        if (colliderRadius < 0.01) {
-          continue;
-        }
-        const colliderHeight = Math.max(0.02, segmentLength * 0.98);
-
-        segmentColliderLocal
-          .set(0, segment.mesh.position.y + segmentLength * 0.5, 0)
-          .applyQuaternion(segment.pivot.quaternion)
-          .add(segment.pivot.position);
-        segmentColliderWorld
-          .copy(segmentColliderLocal)
-          .applyMatrix4(this.group.matrixWorld);
-        segmentColliderWorldQuaternion
-          .copy(groupWorldQuaternion)
-          .multiply(segment.pivot.quaternion)
-          .normalize();
-
-        plantColliders.push({
-          id: `seg-${i}`,
-          type: "cylinder",
-          x: segmentColliderWorld.x,
-          y: segmentColliderWorld.y,
-          z: segmentColliderWorld.z,
-          radius: colliderRadius,
-          height: colliderHeight,
-          quaternion: {
-            x: segmentColliderWorldQuaternion.x,
-            y: segmentColliderWorldQuaternion.y,
-            z: segmentColliderWorldQuaternion.z,
-            w: segmentColliderWorldQuaternion.w,
-          },
-        });
+        this.physics.syncPlantColliders(plantColliders);
+        this._lastPlantColliderSyncTime = elapsedSeconds;
       }
-
-      this.physics.syncPlantColliders(plantColliders);
       this.physics.applyLeafAerodynamics(elapsedSeconds, windStrength);
       if (deltaSeconds > 0) {
         this.physics.step(deltaSeconds);
@@ -2515,7 +2695,6 @@ class PlantSimulator {
     this._collisionFrame += 1;
     if (this._collisionFrame % 30 === 0 || this._collisionFrame === 1) {
       this.checkRuntimeCollisions();
-      this.computeCollisionShrink();
     }
 
     const lifecycleStates = new Array(this.leaves.length);
@@ -2863,7 +3042,14 @@ class PlantSimulator {
         ? 1
         : smooth01((groundDecay - 0.86) / 0.14) * brownMix;
       const scaleFade = hidden ? 0 : 1 - fadeMix * 0.92;
-      const renderedGrowth = growth * scaleFade;
+      const growthLimit = THREE.MathUtils.clamp(
+        Number.isFinite(leaf.collisionGrowthLimit)
+          ? leaf.collisionGrowthLimit
+          : 1,
+        0.0001,
+        1,
+      );
+      const renderedGrowth = Math.min(growth, growthLimit) * scaleFade;
 
       leafTint
         .copy(LEAF_TINT_FRESH)
@@ -2875,17 +3061,16 @@ class PlantSimulator {
       leaf.mesh.material.emissive.copy(leafEmissiveTint);
       leaf.mesh.material.opacity = THREE.MathUtils.clamp(0.96 * (1 - fadeMix), 0, 0.96);
 
-      // Apply collision shrink factor for leaves still near neighbors
-      const collisionShrink = leaf._collisionShrink ?? 1;
-      let scaleX = Math.max(0.0001, leaf.finalScale.x * renderedGrowth * collisionShrink);
-      let scaleY = Math.max(0.0001, leaf.finalScale.y * renderedGrowth * collisionShrink);
-      let scaleZ = Math.max(0.0001, leaf.finalScale.z * renderedGrowth * collisionShrink);
+      let scaleX = Math.max(0.0001, leaf.finalScale.x * renderedGrowth);
+      let scaleY = Math.max(0.0001, leaf.finalScale.y * renderedGrowth);
+      let scaleZ = Math.max(0.0001, leaf.finalScale.z * renderedGrowth);
       if (usedPhysicsTransform && leaf.physicsLockedScale) {
         scaleX = Math.max(0.0001, leaf.physicsLockedScale.x * scaleFade);
         scaleY = Math.max(0.0001, leaf.physicsLockedScale.y * scaleFade);
         scaleZ = Math.max(0.0001, leaf.physicsLockedScale.z * scaleFade);
       }
       leaf.mesh.scale.set(scaleX, scaleY, scaleZ);
+      leaf.currentGrowth = THREE.MathUtils.clamp(renderedGrowth, 0, 1);
       const bendX = -(
         (leaf.bendBase || 0) +
         (leaf.bendAvoid || 0) * growth +
