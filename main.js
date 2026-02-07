@@ -15,6 +15,109 @@ const LEAF_TINT_YELLOW = new THREE.Color(0xd0b25d);
 const LEAF_TINT_BROWN = new THREE.Color(0x6d4a2b);
 const LEAF_EMISSIVE_FRESH = new THREE.Color(0x0f2716);
 const LEAF_EMISSIVE_DRY = new THREE.Color(0x2f1e10);
+const HASH_X = 73856093;
+const HASH_Y = 19349663;
+const HASH_Z = 83492791;
+const SEASON_PROFILES = [
+  {
+    name: "winter",
+    growth: 0.34,
+    fallPressure: 0.92,
+    senescence: 0.95,
+    cloudiness: 0.7,
+    daylightScale: 0.78,
+    tint: new THREE.Color(0xc9d7e7),
+  },
+  {
+    name: "spring",
+    growth: 1.2,
+    fallPressure: 0.14,
+    senescence: 0.18,
+    cloudiness: 0.56,
+    daylightScale: 1.0,
+    tint: new THREE.Color(0xd3e8cc),
+  },
+  {
+    name: "summer",
+    growth: 1.02,
+    fallPressure: 0.26,
+    senescence: 0.32,
+    cloudiness: 0.44,
+    daylightScale: 1.08,
+    tint: new THREE.Color(0xe5edc9),
+  },
+  {
+    name: "autumn",
+    growth: 0.58,
+    fallPressure: 0.86,
+    senescence: 0.78,
+    cloudiness: 0.5,
+    daylightScale: 0.86,
+    tint: new THREE.Color(0xe6cfaf),
+  },
+];
+const SEASON_LABELS = {
+  winter: "invierno",
+  spring: "primavera",
+  summer: "verano",
+  autumn: "otono",
+};
+const WEATHER_LABELS = {
+  clear: "despejado",
+  cloudy: "nublado",
+  rain: "lluvia",
+  snow: "nieve",
+  storm: "tormenta",
+};
+const MOON_PHASE_LABELS = {
+  new: "luna nueva",
+  waxingCrescent: "creciente",
+  firstQuarter: "cuarto creciente",
+  waxingGibbous: "gibosa creciente",
+  full: "luna llena",
+  waningGibbous: "gibosa menguante",
+  lastQuarter: "cuarto menguante",
+  waningCrescent: "menguante",
+};
+const ENV_COLORS = {
+  skyTopDay: new THREE.Color(0x66afea),
+  skyTopTwilight: new THREE.Color(0x355b86),
+  skyTopNight: new THREE.Color(0x0d1c36),
+  skyHorizonDay: new THREE.Color(0xdaf0ff),
+  skyHorizonTwilight: new THREE.Color(0xf1bb85),
+  skyHorizonNight: new THREE.Color(0x1c3252),
+  skyBottomDay: new THREE.Color(0x9fc5de),
+  skyBottomTwilight: new THREE.Color(0x6d87a3),
+  skyBottomNight: new THREE.Color(0x172d43),
+  sunDay: new THREE.Color(0xffecc3),
+  sunTwilight: new THREE.Color(0xffb371),
+  sunNight: new THREE.Color(0x95b8ef),
+  moonDay: new THREE.Color(0xc8dcff),
+  moonNight: new THREE.Color(0xe9f2ff),
+  moonSnow: new THREE.Color(0xeef4ff),
+  fogDay: new THREE.Color(0x8fb8d8),
+  fogTwilight: new THREE.Color(0x6d90ae),
+  fogNight: new THREE.Color(0x10233a),
+  fogRain: new THREE.Color(0x9bb0c3),
+  fogStorm: new THREE.Color(0x6e7e93),
+  hemiSkyDay: new THREE.Color(0xdceefe),
+  hemiSkyNight: new THREE.Color(0x203553),
+  hemiGroundDay: new THREE.Color(0x6c5a45),
+  hemiGroundNight: new THREE.Color(0x1a2218),
+  keyDay: new THREE.Color(0xfff1d5),
+  keyTwilight: new THREE.Color(0xffba7a),
+  keyNight: new THREE.Color(0x7b9bc5),
+  rimDay: new THREE.Color(0xbce7ff),
+  rimNight: new THREE.Color(0x8baad8),
+  fillDay: new THREE.Color(0xd6e4ff),
+  fillNight: new THREE.Color(0x617a99),
+  ambientDay: new THREE.Color(0xb5c7b7),
+  ambientNight: new THREE.Color(0x2b3942),
+};
+
+function spatialHash3(x, y, z) {
+  return ((x * HASH_X) ^ (y * HASH_Y) ^ (z * HASH_Z)) >>> 0;
+}
 
 function fract(value) {
   return value - Math.floor(value);
@@ -193,7 +296,12 @@ const renderer = new THREE.WebGLRenderer({
   antialias: PERFORMANCE_PROFILE.antialias,
   powerPreference: "high-performance",
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERFORMANCE_PROFILE.pixelRatioCap));
+let maxAdaptivePixelRatio = Math.min(
+  window.devicePixelRatio || 1,
+  PERFORMANCE_PROFILE.pixelRatioCap,
+);
+let adaptivePixelRatio = maxAdaptivePixelRatio;
+renderer.setPixelRatio(adaptivePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = PERFORMANCE_PROFILE.shadowType;
@@ -244,6 +352,8 @@ keyLight.shadow.bias = -0.00008;
 keyLight.shadow.normalBias = lowPowerMode ? 0.02 : 0.03;
 keyLight.shadow.radius = lowPowerMode ? 1 : 2;
 scene.add(keyLight);
+keyLight.target.position.set(0, 1.3, 0);
+scene.add(keyLight.target);
 
 const rimLight = new THREE.DirectionalLight(0xbce7ff, lowPowerMode ? 0.56 : 0.74);
 rimLight.position.set(-6.4, 5.6, -4.8);
@@ -255,6 +365,13 @@ scene.add(fillLight);
 
 const ambientLift = new THREE.AmbientLight(0xb5c7b7, lowPowerMode ? 0.14 : 0.21);
 scene.add(ambientLift);
+const LIGHT_BASE_INTENSITY = {
+  hemi: hemiLight.intensity,
+  key: keyLight.intensity,
+  rim: rimLight.intensity,
+  fill: fillLight.intensity,
+  ambient: ambientLift.intensity,
+};
 
 function createVisualTextures(rendererRef) {
   const baseSize = PERFORMANCE_PROFILE.lowPowerMode ? 384 : 768;
@@ -622,6 +739,7 @@ function createGroundContactShadow(sceneRef) {
 
 function createSkyDome() {
   const sunDirection = keyLight.position.clone().normalize();
+  const moonDirection = sunDirection.clone().multiplyScalar(-1).normalize();
   const skyMaterial = new THREE.ShaderMaterial({
     uniforms: {
       topColor: { value: new THREE.Color(0x5fa9e8) },
@@ -629,6 +747,10 @@ function createSkyDome() {
       bottomColor: { value: new THREE.Color(0x9abfd8) },
       sunColor: { value: new THREE.Color(0xffe8be) },
       sunDirection: { value: sunDirection },
+      moonColor: { value: new THREE.Color(0xe5efff) },
+      moonDirection: { value: moonDirection },
+      moonVisibility: { value: 0.7 },
+      moonPhase: { value: 0.8 },
       cloudAmount: { value: PERFORMANCE_PROFILE.lowPowerMode ? 1.02 : 1.16 },
       exponent: { value: 1.1 },
       time: { value: 0 },
@@ -647,6 +769,10 @@ function createSkyDome() {
       uniform vec3 bottomColor;
       uniform vec3 sunColor;
       uniform vec3 sunDirection;
+      uniform vec3 moonColor;
+      uniform vec3 moonDirection;
+      uniform float moonVisibility;
+      uniform float moonPhase;
       uniform float cloudAmount;
       uniform float exponent;
       uniform float time;
@@ -735,6 +861,12 @@ function createSkyDome() {
         float sunCore = pow(sunDot, 860.0);
         float sunHalo = pow(sunDot, 16.0);
         sky += sunColor * (sunCore * 1.2 + sunHalo * 0.31);
+
+        float moonDot = max(dot(dir, normalize(moonDirection)), 0.0);
+        float moonCore = pow(moonDot, 1150.0);
+        float moonHalo = pow(moonDot, 32.0);
+        float moonPhaseBoost = 0.2 + moonPhase * 0.9;
+        sky += moonColor * (moonCore * 1.3 + moonHalo * 0.35) * moonVisibility * moonPhaseBoost;
 
         float horizonHaze = smoothstep(0.0, 0.36, h) * (1.0 - smoothstep(0.36, 0.68, h));
         sky += vec3(0.08, 0.1, 0.12) * horizonHaze * 0.16;
@@ -1102,6 +1234,7 @@ function createDistantMountains() {
     mesh.rotation.y = l === 0 ? 0.0 : 0.32;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
+    mesh.userData.baseOpacity = layer.opacity;
     group.add(mesh);
   }
 
@@ -1154,14 +1287,225 @@ function createAtmosphereParticles() {
   return points;
 }
 
+function createWeatherPrecipitation() {
+  const radius = Math.max(2.8, Math.min(6.4, PERFORMANCE_PROFILE.renderDistance * 0.2));
+  const height = PERFORMANCE_PROFILE.lowPowerMode ? 5.2 : 6.4;
+  const rainCount = PERFORMANCE_PROFILE.lowPowerMode ? 260 : 820;
+  const snowCount = PERFORMANCE_PROFILE.lowPowerMode ? 170 : 440;
+
+  const rainGeometry = new THREE.BufferGeometry();
+  const rainPositions = new Float32Array(rainCount * 3);
+  const rainSpeed = new Float32Array(rainCount);
+  const rainDrift = new Float32Array(rainCount);
+  for (let i = 0; i < rainCount; i += 1) {
+    rainPositions[i * 3] = (Math.random() - 0.5) * radius * 2;
+    rainPositions[i * 3 + 1] = Math.random() * height;
+    rainPositions[i * 3 + 2] = (Math.random() - 0.5) * radius * 2;
+    rainSpeed[i] = 0.75 + Math.random() * 1.25;
+    rainDrift[i] = Math.random() * TAU;
+  }
+  rainGeometry.setAttribute("position", new THREE.BufferAttribute(rainPositions, 3));
+
+  const snowGeometry = new THREE.BufferGeometry();
+  const snowPositions = new Float32Array(snowCount * 3);
+  const snowSpeed = new Float32Array(snowCount);
+  const snowDrift = new Float32Array(snowCount);
+  for (let i = 0; i < snowCount; i += 1) {
+    snowPositions[i * 3] = (Math.random() - 0.5) * radius * 2;
+    snowPositions[i * 3 + 1] = Math.random() * height;
+    snowPositions[i * 3 + 2] = (Math.random() - 0.5) * radius * 2;
+    snowSpeed[i] = 0.42 + Math.random() * 0.88;
+    snowDrift[i] = Math.random() * TAU;
+  }
+  snowGeometry.setAttribute("position", new THREE.BufferAttribute(snowPositions, 3));
+
+  const rainSprite = createProceduralTexture(
+    renderer,
+    64,
+    { repeatX: 1, repeatY: 1, anisotropy: 2, colorSpace: THREE.SRGBColorSpace },
+    (u, v) => {
+      const dx = (u - 0.5) * 2;
+      const dy = (v - 0.5) * 2;
+      const shape = Math.max(0, 1 - Math.abs(dx) * 3.2) * Math.max(0, 1 - Math.abs(dy) * 0.95);
+      const alpha = Math.pow(shape, 1.6) * 255;
+      return { r: 198, g: 226, b: 255, a: alpha };
+    },
+  );
+  rainSprite.wrapS = THREE.ClampToEdgeWrapping;
+  rainSprite.wrapT = THREE.ClampToEdgeWrapping;
+
+  const snowSprite = createProceduralTexture(
+    renderer,
+    64,
+    { repeatX: 1, repeatY: 1, anisotropy: 2, colorSpace: THREE.SRGBColorSpace },
+    (u, v) => {
+      const dx = u - 0.5;
+      const dy = v - 0.5;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const alpha = THREE.MathUtils.clamp(1 - dist * 2.2, 0, 1);
+      return {
+        r: 245,
+        g: 250,
+        b: 255,
+        a: Math.pow(alpha, 1.8) * 255,
+      };
+    },
+  );
+  snowSprite.wrapS = THREE.ClampToEdgeWrapping;
+  snowSprite.wrapT = THREE.ClampToEdgeWrapping;
+
+  const rainMaterial = new THREE.PointsMaterial({
+    color: 0xb9d8ff,
+    map: rainSprite,
+    alphaMap: rainSprite,
+    size: PERFORMANCE_PROFILE.lowPowerMode ? 0.072 : 0.088,
+    transparent: true,
+    opacity: 0,
+    alphaTest: 0.05,
+    depthWrite: false,
+  });
+  const snowMaterial = new THREE.PointsMaterial({
+    color: 0xf3f8ff,
+    map: snowSprite,
+    alphaMap: snowSprite,
+    size: PERFORMANCE_PROFILE.lowPowerMode ? 0.082 : 0.102,
+    transparent: true,
+    opacity: 0,
+    alphaTest: 0.04,
+    depthWrite: false,
+  });
+
+  const rainPoints = new THREE.Points(rainGeometry, rainMaterial);
+  rainPoints.visible = false;
+  scene.add(rainPoints);
+
+  const snowPoints = new THREE.Points(snowGeometry, snowMaterial);
+  snowPoints.visible = false;
+  scene.add(snowPoints);
+
+  return {
+    radius,
+    height,
+    rainPoints,
+    snowPoints,
+    rainGeometry,
+    snowGeometry,
+    rainMaterial,
+    snowMaterial,
+    rainSprite,
+    snowSprite,
+    rainPositions,
+    snowPositions,
+    rainSpeed,
+    snowSpeed,
+    rainDrift,
+    snowDrift,
+    update(dt, elapsedSeconds, environment, cameraRef) {
+      const safeDt = THREE.MathUtils.clamp(dt, 0, 0.05);
+      const centerX = cameraRef.position.x;
+      const centerZ = cameraRef.position.z;
+      const baseY = sampleSurfaceHeightAt(centerX, centerZ) + 0.22;
+      const windX = Math.sin(elapsedSeconds * 0.32 + environment.yearProgress * TAU);
+      const windZ = Math.cos(elapsedSeconds * 0.27 + environment.dayProgress * TAU);
+
+      rainPoints.position.set(centerX, baseY, centerZ);
+      snowPoints.position.set(centerX, baseY, centerZ);
+
+      const rainIntensity = THREE.MathUtils.clamp(environment.rainIntensity, 0, 1);
+      rainPoints.visible = rainIntensity > 0.03;
+      if (rainPoints.visible) {
+        rainMaterial.opacity = THREE.MathUtils.clamp(
+          0.16 + rainIntensity * 0.5,
+          0.08,
+          0.82,
+        );
+        const fallSpeed = 4.3 + rainIntensity * 9.2;
+        for (let i = 0; i < rainCount; i += 1) {
+          const idx = i * 3;
+          rainPositions[idx + 1] -= safeDt * rainSpeed[i] * fallSpeed;
+          rainPositions[idx] += safeDt * windX * (0.45 + rainIntensity * 0.88);
+          rainPositions[idx + 2] += safeDt * windZ * (0.45 + rainIntensity * 0.88);
+
+          if (rainPositions[idx + 1] < 0) {
+            rainPositions[idx] = (Math.random() - 0.5) * radius * 2;
+            rainPositions[idx + 1] = height + Math.random() * height * 0.28;
+            rainPositions[idx + 2] = (Math.random() - 0.5) * radius * 2;
+          }
+          if (Math.abs(rainPositions[idx]) > radius || Math.abs(rainPositions[idx + 2]) > radius) {
+            rainPositions[idx] = (Math.random() - 0.5) * radius * 2;
+            rainPositions[idx + 2] = (Math.random() - 0.5) * radius * 2;
+          }
+        }
+        rainGeometry.attributes.position.needsUpdate = true;
+      } else if (rainMaterial.opacity > 0) {
+        rainMaterial.opacity = 0;
+      }
+
+      const snowIntensity = THREE.MathUtils.clamp(environment.snowIntensity, 0, 1);
+      snowPoints.visible = snowIntensity > 0.03;
+      if (snowPoints.visible) {
+        snowMaterial.opacity = THREE.MathUtils.clamp(
+          0.2 + snowIntensity * 0.56,
+          0.1,
+          0.88,
+        );
+        const fallSpeed = 0.45 + snowIntensity * 1.6;
+        for (let i = 0; i < snowCount; i += 1) {
+          const idx = i * 3;
+          const swirl = elapsedSeconds * (0.46 + snowSpeed[i] * 0.6) + snowDrift[i];
+          snowPositions[idx + 1] -= safeDt * snowSpeed[i] * fallSpeed;
+          snowPositions[idx] += safeDt * (windX * 0.16 + Math.sin(swirl) * 0.22);
+          snowPositions[idx + 2] += safeDt * (windZ * 0.16 + Math.cos(swirl) * 0.22);
+
+          if (snowPositions[idx + 1] < 0) {
+            snowPositions[idx] = (Math.random() - 0.5) * radius * 2;
+            snowPositions[idx + 1] = height + Math.random() * height * 0.22;
+            snowPositions[idx + 2] = (Math.random() - 0.5) * radius * 2;
+          }
+          if (Math.abs(snowPositions[idx]) > radius || Math.abs(snowPositions[idx + 2]) > radius) {
+            snowPositions[idx] = (Math.random() - 0.5) * radius * 2;
+            snowPositions[idx + 2] = (Math.random() - 0.5) * radius * 2;
+          }
+        }
+        snowGeometry.attributes.position.needsUpdate = true;
+      } else if (snowMaterial.opacity > 0) {
+        snowMaterial.opacity = 0;
+      }
+    },
+    dispose() {
+      scene.remove(rainPoints);
+      scene.remove(snowPoints);
+      rainGeometry.dispose();
+      snowGeometry.dispose();
+      rainMaterial.dispose();
+      snowMaterial.dispose();
+      rainSprite.dispose();
+      snowSprite.dispose();
+    },
+  };
+}
+
 const groundData = createGround();
 const distantMountains = createDistantMountains();
+const distantMountainLayers = [];
+if (distantMountains) {
+  distantMountains.traverse((obj) => {
+    if (!obj.isMesh || !obj.material || !obj.material.transparent) {
+      return;
+    }
+    distantMountainLayers.push({
+      material: obj.material,
+      baseOpacity: Number.isFinite(obj.userData.baseOpacity) ? obj.userData.baseOpacity : 0.8,
+    });
+  });
+}
 const groundContactShadow = createGroundContactShadow(scene);
 const staticExtraColliders =
   groundData && Array.isArray(groundData.extraColliders)
     ? groundData.extraColliders
     : [];
 const atmosphereParticles = createAtmosphereParticles();
+const weatherPrecipitation = createWeatherPrecipitation();
 
 class PhysicsDebugOverlay {
   constructor(sceneRef) {
@@ -1670,7 +2014,7 @@ class PlantSimulator {
     this.anchorLeafCount = new Map();
     this.anchorLeafSectorCount = new Map();
     this.leafSpatialDensity = new Map();
-    this.seedLeavesCreated = false;
+    this.seedLeafBurstsCreated = 0;
     this.maxLeafBudget = this.settings.lowPowerMode ? 320 : 500;
     this.structureScale = 1 + Math.max(0, this.settings.maxDepth - 4) * 0.09;
     this.leafCellSize = 0.42 + this.structureScale * 0.17;
@@ -1686,6 +2030,33 @@ class PlantSimulator {
     this._plantColliderSyncInterval = this.settings.lowPowerMode ? 1 / 20 : 1 / 30;
     this._maxAttachedLeafColliders = this.settings.lowPowerMode ? 90 : 160;
     this._collisionCheckInterval = this.settings.lowPowerMode ? 45 : 30;
+    this._colliderSyncHzBase = this.settings.lowPowerMode ? 16 : 24;
+    this._colliderSyncHzHeavy = this.settings.lowPowerMode ? 10 : 16;
+    this._maxSegmentColliders = this.settings.lowPowerMode ? 110 : 210;
+    this._maxSegmentCollidersHard = this.settings.lowPowerMode ? 140 : 260;
+    this._segmentColliderMinRadius = this.settings.lowPowerMode ? 0.0085 : 0.006;
+    this._segmentColliderMinLength = this.settings.lowPowerMode ? 0.012 : 0.008;
+    this._branchCollisionCellSize = this.settings.lowPowerMode ? 0.34 : 0.28;
+    this._branchCollisionInvCellSize = 1 / this._branchCollisionCellSize;
+    this._branchCollisionNeighborOffsets = [];
+    for (let z = -1; z <= 1; z += 1) {
+      for (let y = -1; y <= 1; y += 1) {
+        for (let x = -1; x <= 1; x += 1) {
+          this._branchCollisionNeighborOffsets.push({ x, y, z });
+        }
+      }
+    }
+    this._leafCollisionNeighborOffsets = [];
+    for (let z = -1; z <= 1; z += 1) {
+      for (let y = -1; y <= 1; y += 1) {
+        for (let x = -1; x <= 1; x += 1) {
+          this._leafCollisionNeighborOffsets.push({ x, y, z });
+        }
+      }
+    }
+    this._leafCollisionBuckets = new Map();
+    this._leafCollisionBucketKeys = [];
+    this._leafCollisionActiveIndices = [];
     this.physics = settings.physics || null;
     this._leafCollisionWorldA = new THREE.Vector3();
     this._leafCollisionWorldB = new THREE.Vector3();
@@ -1738,8 +2109,11 @@ class PlantSimulator {
       identityQuat: new THREE.Quaternion(0, 0, 0, 1),
       leafBranchClosest: new THREE.Vector3(),
       leafBranchDelta: new THREE.Vector3(),
+      segmentColliderMidPoint: new THREE.Vector3(),
       plantColliders: [],
       evaluatedBranchColliders: [],
+      branchCollisionBuckets: new Map(),
+      branchCollisionBucketKeys: [],
       lifecycleStates: [],
       activeDetachingIndices: [],
       pendingStartIndices: [],
@@ -1960,19 +2334,32 @@ class PlantSimulator {
       );
       this.segmentCount += 1;
 
-      // Garantiza un par de hojas juveniles en etapa temprana.
-      if (depth === 0 && !this.seedLeavesCreated && i >= 1) {
+      // Garantiza brotes juveniles visibles durante el 0-20% del crecimiento.
+      if (
+        depth === 0 &&
+        this.seedLeafBurstsCreated < 3 &&
+        i >= 1 &&
+        i <= Math.min(6, segments - 2)
+      ) {
+        const burstBirth = THREE.MathUtils.clamp(
+          0.02 + this.seedLeafBurstsCreated * 0.03 + this.rng() * 0.012,
+          0.01,
+          0.16,
+        );
+        const burstCount = this.seedLeafBurstsCreated === 0 ? 5 : 4;
         this.createLeafCluster(
           currentSegment,
           nextPosition,
           currentDirection,
           depth,
-          0.035,
-          2,
+          burstBirth,
+          burstCount,
           true,
-          0.95,
+          0.98,
+          false,
+          0.12 + this.rng() * 0.08,
         );
-        this.seedLeavesCreated = true;
+        this.seedLeafBurstsCreated += 1;
       }
 
       branchTrace.push({
@@ -2136,12 +2523,13 @@ class PlantSimulator {
     const depthRatio = depth / Math.max(1, this.settings.maxDepth);
     // Todas las ramas (depth >= 1) obtienen hojas en su punta
     if (depth >= 1 && previousSegment) {
-      // Hacer que la hoja de punta nazca cerca del final de la rama evita
-      // "pops" cuando aparecen ramas largas en etapas tardías.
-      const tipLeafBirth = birthStart + growthSpan * (0.72 + this.rng() * 0.12);
-      const tipLeafEmergenceDuration = Math.max(
-        0.62,
-        growthSpan * (0.62 + this.rng() * 0.24),
+      // Adelantar el brote de hojas terminales para que aparezcan durante el
+      // crecimiento de la rama, no casi al final de la simulación.
+      const tipLeafBirth = birthStart + growthSpan * (0.44 + this.rng() * 0.22);
+      const tipLeafEmergenceDuration = THREE.MathUtils.clamp(
+        growthSpan * (0.24 + this.rng() * 0.22),
+        0.16,
+        0.48,
       );
 
       // FORZAR hoja directa en la punta — sin filtros, sin cluster, sin límites
@@ -2413,17 +2801,22 @@ class PlantSimulator {
     const HARD_OVERLAP_RADIUS = 0.045;
     const HARD_OVERLAP_RADIUS_SQ = HARD_OVERLAP_RADIUS * HARD_OVERLAP_RADIUS;
     const invCellSize = 1 / (COLLISION_RADIUS * 1.35);
-    const buckets = new Map();
-    const activeIndices = [];
-    const neighborOffsets = [];
+    const buckets = this._leafCollisionBuckets;
+    const bucketKeys = this._leafCollisionBucketKeys;
+    const activeIndices = this._leafCollisionActiveIndices;
+    const neighborOffsets = this._leafCollisionNeighborOffsets;
 
-    for (let dz = -1; dz <= 1; dz += 1) {
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          neighborOffsets.push([dx, dy, dz]);
+    if (bucketKeys.length > 0) {
+      for (let i = 0; i < bucketKeys.length; i += 1) {
+        const key = bucketKeys[i];
+        const bucket = buckets.get(key);
+        if (bucket) {
+          bucket.length = 0;
         }
       }
+      bucketKeys.length = 0;
     }
+    activeIndices.length = 0;
 
     for (let i = 0; i < this.leaves.length; i += 1) {
       const leaf = this.leaves[i];
@@ -2435,11 +2828,16 @@ class PlantSimulator {
       leaf._collisionCellX = cx;
       leaf._collisionCellY = cy;
       leaf._collisionCellZ = cz;
-      const key = `${cx}|${cy}|${cz}`;
-      if (!buckets.has(key)) {
-        buckets.set(key, []);
+      const key = spatialHash3(cx, cy, cz);
+      let bucket = buckets.get(key);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(key, bucket);
       }
-      buckets.get(key).push(i);
+      if (bucket.length === 0) {
+        bucketKeys.push(key);
+      }
+      bucket.push(i);
       activeIndices.push(i);
     }
 
@@ -2452,7 +2850,11 @@ class PlantSimulator {
 
       for (let k = 0; k < neighborOffsets.length; k += 1) {
         const offset = neighborOffsets[k];
-        const key = `${ax + offset[0]}|${ay + offset[1]}|${az + offset[2]}`;
+        const key = spatialHash3(
+          ax + offset.x,
+          ay + offset.y,
+          az + offset.z,
+        );
         const bucket = buckets.get(key);
         if (!bucket) {
           continue;
@@ -2973,6 +3375,15 @@ class PlantSimulator {
       return false;
     }
 
+    const depthBirthScale =
+      depth <= 1 ? 0.62 : depth === 2 ? 0.72 : 0.82;
+    const birthAdvance = forceEarlyActive ? 0.02 : 0.008;
+    const normalizedBirth = THREE.MathUtils.clamp(
+      birth * depthBirthScale - birthAdvance,
+      0,
+      0.9,
+    );
+
     const pivot = new THREE.Group();
     pivot.position.copy(position);
     pivot.quaternion.setFromUnitVectors(UP, direction);
@@ -3068,12 +3479,16 @@ class PlantSimulator {
     const lifeActiveWindow = lifeGrowDuration + lifeMatureDuration;
     const lifeOffset = forceEarlyActive
       ? this.rng() * Math.max(0.0001, lifeGrowDuration * 0.55)
-      : this.rng() * lifeActiveWindow;
+      : this.rng() * Math.max(0.0001, lifeActiveWindow * 0.32);
 
     const emergenceDuration = Number.isFinite(emergenceDurationOverride) &&
       emergenceDurationOverride > 0
       ? emergenceDurationOverride
-      : 0.62 + this.rng() * 0.45 + Math.min(0.28, depth * 0.05);
+      : THREE.MathUtils.clamp(
+          0.17 + this.rng() * 0.2 + Math.min(0.16, depth * 0.03),
+          0.12,
+          0.55,
+        );
 
     if (anchorSegment) {
       const leafLoadContribution = THREE.MathUtils.clamp(
@@ -3095,7 +3510,7 @@ class PlantSimulator {
       anchorSurfaceLocal,
       anchorAxialOffset,
       anchorRadialLift,
-      birth,
+      birth: normalizedBirth,
       duration: emergenceDuration,
       finalScale: new THREE.Vector3(widthScale, lengthScale, thicknessScale),
       depth,
@@ -3279,8 +3694,17 @@ class PlantSimulator {
         lifeScale = 0;
       }
     } else {
-      const lifeTime =
-        Math.max(0, elapsedSeconds - (leaf.timeHold || 0)) + leaf.lifeOffset;
+      const growthWindow = Math.max(0.08, 1 - THREE.MathUtils.clamp(leaf.birth || 0, 0, 1));
+      const growthProgress = THREE.MathUtils.clamp(
+        (age - (leaf.birth || 0)) / growthWindow,
+        0,
+        1,
+      );
+      const growthDrivenTime = growthProgress * leaf.lifeCycleDuration * 1.05;
+      const lifeTime = Math.max(
+        growthDrivenTime,
+        Math.max(0, elapsedSeconds - (leaf.timeHold || 0)) + leaf.lifeOffset,
+      );
       const phase = Math.min(
         lifeTime,
         leaf.lifeCycleDuration - 0.0001,
@@ -3353,7 +3777,7 @@ class PlantSimulator {
         // Hojas internas: conforme crece la planta, se desprenden gradualmente.
         const interiorFactor = THREE.MathUtils.clamp((0.74 - tipPriority) / 0.74, 0, 1);
         if (interiorFactor > 0.04) {
-          const shedStart = THREE.MathUtils.lerp(0.84, 0.42, interiorFactor);
+          const shedStart = THREE.MathUtils.lerp(0.72, 0.34, interiorFactor);
           if (age > shedStart) {
             const shedProgress = THREE.MathUtils.clamp(
               (age - shedStart) / Math.max(0.08, 1 - shedStart),
@@ -3393,7 +3817,7 @@ class PlantSimulator {
           1,
         );
         if (pruneBias > 0.08) {
-          const structuralStart = THREE.MathUtils.lerp(0.64, 0.28, pruneBias);
+          const structuralStart = THREE.MathUtils.lerp(0.56, 0.24, pruneBias);
           if (age > structuralStart) {
             const structuralDuration = Math.max(0.1, 0.74 - pruneBias * 0.36);
             const structuralProgress = THREE.MathUtils.clamp(
@@ -3479,12 +3903,22 @@ class PlantSimulator {
     const scratch = this._updateScratch;
     scratch.plantColliders.length = 0;
     scratch.evaluatedBranchColliders.length = 0;
+    if (scratch.branchCollisionBucketKeys.length > 0) {
+      for (let i = 0; i < scratch.branchCollisionBucketKeys.length; i += 1) {
+        const key = scratch.branchCollisionBucketKeys[i];
+        const bucket = scratch.branchCollisionBuckets.get(key);
+        if (bucket) {
+          bucket.length = 0;
+        }
+      }
+      scratch.branchCollisionBucketKeys.length = 0;
+    }
     scratch.activeDetachingIndices.length = 0;
     scratch.pendingStartIndices.length = 0;
     return scratch;
   }
 
-  update(elapsedSeconds, age, windStrength) {
+  update(elapsedSeconds, age, windStrength, environment = null) {
     const {
       swayQuatA,
       swayQuatB,
@@ -3532,8 +3966,11 @@ class PlantSimulator {
       identityQuat,
       leafBranchClosest,
       leafBranchDelta,
+      segmentColliderMidPoint,
       plantColliders,
       evaluatedBranchColliders,
+      branchCollisionBuckets,
+      branchCollisionBucketKeys,
       lifecycleStates,
       activeDetachingIndices,
       pendingStartIndices,
@@ -3831,79 +4268,100 @@ class PlantSimulator {
             1.12,
             Math.pow(depthNorm, 1.25),
           );
+          const invBranchCellSize = this._branchCollisionInvCellSize;
           const branchCollisionPasses = 2;
           for (let pass = 0; pass < branchCollisionPasses; pass += 1) {
             segmentCollisionPush.set(0, 0, 0);
+            segmentColliderMidPoint
+              .copy(segment.pivot.position)
+              .add(tipWorld)
+              .multiplyScalar(0.5);
+            const baseCellX = Math.floor(segmentColliderMidPoint.x * invBranchCellSize);
+            const baseCellY = Math.floor(segmentColliderMidPoint.y * invBranchCellSize);
+            const baseCellZ = Math.floor(segmentColliderMidPoint.z * invBranchCellSize);
 
-            for (let c = 0; c < evaluatedBranchColliders.length; c += 1) {
-              const other = evaluatedBranchColliders[c];
-              if (this.areSegmentsRelated(segment, other.segment)) {
-                continue;
-              }
-              if (other.segment.depth === 0 && segment.depth <= 1) {
-                continue;
-              }
-
-              const currentLenSq = tipWorld.distanceToSquared(segment.pivot.position);
-              const otherLenSq = other.tip.distanceToSquared(other.base);
-              if (currentLenSq < 1e-10 || otherLenSq < 1e-10) {
-                continue;
-              }
-
-              closestPointsOnSegments(
-                segment.pivot.position,
-                tipWorld,
-                other.base,
-                other.tip,
-                segmentCollisionClosest,
-                segmentCollisionClosestOther,
+            for (let n = 0; n < this._branchCollisionNeighborOffsets.length; n += 1) {
+              const offset = this._branchCollisionNeighborOffsets[n];
+              const bucketKey = spatialHash3(
+                baseCellX + offset.x,
+                baseCellY + offset.y,
+                baseCellZ + offset.z,
               );
-
-              segmentCollisionDelta
-                .copy(segmentCollisionClosest)
-                .sub(segmentCollisionClosestOther);
-              const distSq = segmentCollisionDelta.lengthSq();
-              const minDist =
-                (segmentCollisionRadius + other.radius) *
-                THREE.MathUtils.lerp(0.88, 1.22, branchCollision);
-              if (distSq >= minDist * minDist) {
+              const bucket = branchCollisionBuckets.get(bucketKey);
+              if (!bucket || bucket.length === 0) {
                 continue;
               }
 
-              let dist = Math.sqrt(Math.max(distSq, 1e-12));
-              if (dist < 1e-5) {
-                segmentCurrentDir
-                  .copy(tipWorld)
-                  .sub(segment.pivot.position)
-                  .normalize();
-                segmentOtherDir
-                  .copy(other.tip)
-                  .sub(other.base)
-                  .normalize();
+              for (let c = 0; c < bucket.length; c += 1) {
+                const other = bucket[c];
+                if (this.areSegmentsRelated(segment, other.segment)) {
+                  continue;
+                }
+                if (other.segment.depth === 0 && segment.depth <= 1) {
+                  continue;
+                }
 
-                segmentCollisionFallback
-                  .copy(segmentCurrentDir)
-                  .cross(segmentOtherDir);
-                if (segmentCollisionFallback.lengthSq() < 1e-8) {
+                const currentLenSq = tipWorld.distanceToSquared(segment.pivot.position);
+                const otherLenSq = other.tip.distanceToSquared(other.base);
+                if (currentLenSq < 1e-10 || otherLenSq < 1e-10) {
+                  continue;
+                }
+
+                closestPointsOnSegments(
+                  segment.pivot.position,
+                  tipWorld,
+                  other.base,
+                  other.tip,
+                  segmentCollisionClosest,
+                  segmentCollisionClosestOther,
+                );
+
+                segmentCollisionDelta
+                  .copy(segmentCollisionClosest)
+                  .sub(segmentCollisionClosestOther);
+                const distSq = segmentCollisionDelta.lengthSq();
+                const minDist =
+                  (segmentCollisionRadius + other.radius) *
+                  THREE.MathUtils.lerp(0.88, 1.22, branchCollision);
+                if (distSq >= minDist * minDist) {
+                  continue;
+                }
+
+                let dist = Math.sqrt(Math.max(distSq, 1e-12));
+                if (dist < 1e-5) {
+                  segmentCurrentDir
+                    .copy(tipWorld)
+                    .sub(segment.pivot.position)
+                    .normalize();
+                  segmentOtherDir
+                    .copy(other.tip)
+                    .sub(other.base)
+                    .normalize();
+
                   segmentCollisionFallback
                     .copy(segmentCurrentDir)
-                    .cross(UP);
+                    .cross(segmentOtherDir);
+                  if (segmentCollisionFallback.lengthSq() < 1e-8) {
+                    segmentCollisionFallback
+                      .copy(segmentCurrentDir)
+                      .cross(UP);
+                  }
+                  if (segmentCollisionFallback.lengthSq() < 1e-8) {
+                    segmentCollisionFallback.set(1, 0, 0);
+                  }
+                  segmentCollisionDelta.copy(segmentCollisionFallback).normalize();
+                  dist = 0;
+                } else {
+                  segmentCollisionDelta.multiplyScalar(1 / dist);
                 }
-                if (segmentCollisionFallback.lengthSq() < 1e-8) {
-                  segmentCollisionFallback.set(1, 0, 0);
-                }
-                segmentCollisionDelta.copy(segmentCollisionFallback).normalize();
-                dist = 0;
-              } else {
-                segmentCollisionDelta.multiplyScalar(1 / dist);
-              }
 
-              const penetration = minDist - dist;
-              if (penetration > 0) {
-                segmentCollisionPush.addScaledVector(
-                  segmentCollisionDelta,
-                  penetration * (0.95 + branchCollision * 1.35),
-                );
+                const penetration = minDist - dist;
+                if (penetration > 0) {
+                  segmentCollisionPush.addScaledVector(
+                    segmentCollisionDelta,
+                    penetration * (0.95 + branchCollision * 1.35),
+                  );
+                }
               }
             }
 
@@ -4026,6 +4484,29 @@ class PlantSimulator {
       segment._runtimeCollider.tip.copy(tipWorld);
       segment._runtimeCollider.radius = segmentCollisionRadius;
       evaluatedBranchColliders.push(segment._runtimeCollider);
+      segmentColliderMidPoint
+        .copy(segment.pivot.position)
+        .add(tipWorld)
+        .multiplyScalar(0.5);
+      const branchCellX = Math.floor(
+        segmentColliderMidPoint.x * this._branchCollisionInvCellSize,
+      );
+      const branchCellY = Math.floor(
+        segmentColliderMidPoint.y * this._branchCollisionInvCellSize,
+      );
+      const branchCellZ = Math.floor(
+        segmentColliderMidPoint.z * this._branchCollisionInvCellSize,
+      );
+      const branchBucketKey = spatialHash3(branchCellX, branchCellY, branchCellZ);
+      let branchBucket = branchCollisionBuckets.get(branchBucketKey);
+      if (!branchBucket) {
+        branchBucket = [];
+        branchCollisionBuckets.set(branchBucketKey, branchBucket);
+      }
+      if (branchBucket.length === 0) {
+        branchCollisionBucketKeys.push(branchBucketKey);
+      }
+      branchBucket.push(segment._runtimeCollider);
     }
 
     this.group.updateMatrixWorld();
@@ -4033,6 +4514,18 @@ class PlantSimulator {
     inverseGroupWorldQuaternion.copy(groupWorldQuaternion).invert();
 
     if (this.physics && this.physics.ready) {
+      const colliderLoad = THREE.MathUtils.clamp(
+        (this.segments.length / Math.max(1, this.segmentBudget)) * 0.62 +
+          (this.leaves.length / Math.max(1, this.maxLeafBudget)) * 0.38,
+        0,
+        1,
+      );
+      const colliderSyncHz = THREE.MathUtils.lerp(
+        this._colliderSyncHzBase,
+        this._colliderSyncHzHeavy,
+        colliderLoad,
+      );
+      this._plantColliderSyncInterval = 1 / Math.max(4, colliderSyncHz);
       const shouldSyncPlantColliders =
         this._lastPlantColliderSyncTime === null ||
         elapsedSeconds - this._lastPlantColliderSyncTime >=
@@ -4040,19 +4533,46 @@ class PlantSimulator {
 
       if (shouldSyncPlantColliders) {
         plantColliders.length = 0;
+        const overload = THREE.MathUtils.clamp(
+          (this.segments.length - this._maxSegmentColliders) /
+            Math.max(1, this._maxSegmentColliders),
+          0,
+          1,
+        );
+        const segmentColliderBudget = Math.max(
+          64,
+          Math.round(
+            THREE.MathUtils.lerp(
+              this._maxSegmentCollidersHard,
+              this._maxSegmentColliders,
+              overload,
+            ),
+          ),
+        );
+        let segmentColliderCount = 0;
         for (let i = 0; i < this.segments.length; i += 1) {
           const segment = this.segments[i];
           const segmentLength = segment.currentLength || 0;
-          if (segmentLength < 0.008) {
+          if (segmentLength < this._segmentColliderMinLength) {
+            continue;
+          }
+          if (
+            segment.depth > 0 &&
+            segmentColliderCount >= segmentColliderBudget &&
+            (segment.depth > 2 || (segment.runtimeLeafLoad || 0) < 0.16)
+          ) {
             continue;
           }
 
           const colliderRadius =
             Math.max(segment.currentTopRadius, segment.currentBaseRadius);
-          if (colliderRadius < 0.006) {
+          const minColliderRadius =
+            this._segmentColliderMinRadius *
+            (segment.depth >= this.settings.maxDepth - 1 ? 0.72 : 1);
+          if (colliderRadius < minColliderRadius) {
             continue;
           }
-          const colliderHeight = Math.max(0.008, segmentLength);
+          const colliderHeight = Math.max(this._segmentColliderMinLength, segmentLength);
 
           segmentColliderLocal
             .set(
@@ -4087,6 +4607,7 @@ class PlantSimulator {
               w: segmentColliderWorldQuaternion.w,
             },
           });
+          segmentColliderCount += 1;
         }
 
         // Colliders cinemáticos para hojas adheridas (mientras no estén cayendo).
@@ -4153,6 +4674,76 @@ class PlantSimulator {
       );
     }
 
+    const seasonalFallPressure = THREE.MathUtils.clamp(
+      environment && Number.isFinite(environment.leafFallPressure)
+        ? environment.leafFallPressure
+        : 0,
+      0,
+      1.1,
+    );
+    const seasonalSenescenceBoost = THREE.MathUtils.clamp(
+      environment && Number.isFinite(environment.leafSenescenceBoost)
+        ? environment.leafSenescenceBoost
+        : 0,
+      0,
+      1.15,
+    );
+    if (seasonalFallPressure > 0.001 || seasonalSenescenceBoost > 0.001) {
+      for (let i = 0; i < this.leaves.length; i += 1) {
+        const leaf = this.leaves[i];
+        const state = lifecycleStates[i];
+        if (!leaf || !state || leaf.isSeedLeaf || leaf.collisionForceDetach) {
+          continue;
+        }
+        if (state.hidden) {
+          continue;
+        }
+
+        const tipPriority = THREE.MathUtils.clamp(leaf.tipPriority ?? 0.5, 0, 1);
+        const interiorBias = THREE.MathUtils.clamp((0.92 - tipPriority) / 0.92, 0, 1);
+        const pruneBias = THREE.MathUtils.clamp(leaf.ramificationPruneBias || 0, 0, 1);
+        const sensitivity = THREE.MathUtils.clamp(
+          interiorBias * 0.9 + pruneBias * 0.5,
+          0.05,
+          1.2,
+        );
+        const seasonalSenescence = THREE.MathUtils.clamp(
+          seasonalSenescenceBoost * sensitivity,
+          0,
+          1.1,
+        );
+        if (seasonalSenescence > state.senescence) {
+          state.senescence = seasonalSenescence;
+        }
+
+        const seasonalFall = smooth01(
+          (seasonalFallPressure * sensitivity - 0.2) / 0.8,
+        );
+        if (seasonalFall > state.fall) {
+          state.fall = seasonalFall;
+        }
+
+        if (state.fall > 0) {
+          state.lifeScale = Math.min(
+            state.lifeScale,
+            Math.max(0, 1 - state.fall * 0.32 - state.senescence * 0.1),
+          );
+        }
+        if (state.fall > 0.82) {
+          state.stage = "ground";
+          state.groundDecay = Math.max(
+            state.groundDecay,
+            smooth01((state.fall - 0.82) / 0.18),
+          );
+        }
+        if (state.groundDecay > 0.995) {
+          state.stage = "hidden";
+          state.hidden = true;
+          state.lifeScale = 0;
+        }
+      }
+    }
+
     const hardConcurrentFallCap = THREE.MathUtils.clamp(
       Math.round(this.settings.maxConcurrentLeafFall ?? 12),
       0,
@@ -4177,6 +4768,11 @@ class PlantSimulator {
         );
       }
     }
+    if (hardConcurrentFallCap > 0 && seasonalFallPressure > 0.14) {
+      preferredConcurrentFalling += Math.round(
+        hardConcurrentFallCap * seasonalFallPressure * 0.5,
+      );
+    }
     preferredConcurrentFalling = THREE.MathUtils.clamp(
       preferredConcurrentFalling,
       0,
@@ -4188,7 +4784,16 @@ class PlantSimulator {
     for (let i = 0; i < this.leaves.length; i += 1) {
       const leaf = this.leaves[i];
       const state = lifecycleStates[i];
-      const wantsFall = state.fall > 0 && state.groundDecay <= 0 && !state.hidden;
+      const detachGateAge =
+        age - (Number.isFinite(leaf.birth) ? leaf.birth : 0);
+      const detachGateDuration = Math.max(0.06, (leaf.duration || 0.16) * 0.26);
+      const hasEmergedEnough =
+        (leaf.currentGrowth || 0) > 0.2 || detachGateAge > detachGateDuration;
+      const wantsFall =
+        state.fall > 0 &&
+        state.groundDecay <= 0 &&
+        !state.hidden &&
+        hasEmergedEnough;
 
       // Collision-forced leaves always detach, bypass throttle
       if (leaf.collisionForceDetach) {
@@ -4587,15 +5192,41 @@ class PlantSimulator {
         1,
       );
       const renderedGrowth = Math.min(growth, growthLimit) * scaleFade;
+      const seasonalPigmentShift = environment
+        ? THREE.MathUtils.clamp(
+            environment.leafSenescenceBoost * 0.7 +
+              environment.leafFallPressure * 0.55,
+            0,
+            1,
+          )
+        : 0;
+      const nightTint = environment
+        ? THREE.MathUtils.clamp(environment.nightFactor, 0, 1)
+        : 0;
 
       leafTint
         .copy(LEAF_TINT_FRESH)
         .multiplyScalar(leaf.colorVariance || 1)
         .lerp(LEAF_TINT_YELLOW, yellowMix)
         .lerp(LEAF_TINT_BROWN, brownMix);
+      if (!leaf.isSeedLeaf && seasonalPigmentShift > 0.001) {
+        const tipPriority = THREE.MathUtils.clamp(leaf.tipPriority ?? 0.5, 0, 1);
+        const interiorBias = THREE.MathUtils.clamp((0.95 - tipPriority) / 0.95, 0, 1);
+        leafTint.lerp(LEAF_TINT_YELLOW, seasonalPigmentShift * interiorBias * 0.58);
+      }
+      if (nightTint > 0.001) {
+        leafTint.multiplyScalar(1 - nightTint * 0.09);
+      }
       leafEmissiveTint.copy(LEAF_EMISSIVE_FRESH).lerp(LEAF_EMISSIVE_DRY, brownMix);
       leaf.mesh.material.color.copy(leafTint);
       leaf.mesh.material.emissive.copy(leafEmissiveTint);
+      leaf.mesh.material.emissiveIntensity = environment
+        ? THREE.MathUtils.clamp(
+            0.034 + environment.daylight * 0.029 + environment.twilight * 0.012,
+            0.02,
+            0.08,
+          )
+        : 0.05;
       leaf.mesh.material.opacity = THREE.MathUtils.clamp(0.96 * (1 - fadeMix), 0, 0.96);
 
       let scaleX = Math.max(0.0001, leaf.finalScale.x * renderedGrowth);
@@ -4709,6 +5340,13 @@ const ui = {
   growthSpeedValue: document.getElementById("growthSpeedValue"),
   wind: document.getElementById("wind"),
   windValue: document.getElementById("windValue"),
+  dayNightCycle: document.getElementById("dayNightCycle"),
+  seasonsCycle: document.getElementById("seasonsCycle"),
+  dayLength: document.getElementById("dayLength"),
+  dayLengthValue: document.getElementById("dayLengthValue"),
+  yearLength: document.getElementById("yearLength"),
+  yearLengthValue: document.getElementById("yearLengthValue"),
+  envStatus: document.getElementById("envStatus"),
   fallingLeaves: document.getElementById("fallingLeaves"),
   fallingLeavesValue: document.getElementById("fallingLeavesValue"),
   physics: document.getElementById("physics"),
@@ -4738,6 +5376,10 @@ const state = {
   autoGrow: true,
   growthSpeed: Number(ui.growthSpeed.value),
   windStrength: Number(ui.wind.value),
+  dayNightCycle: Boolean(ui.dayNightCycle.checked),
+  seasonsCycle: Boolean(ui.seasonsCycle.checked),
+  dayLengthMinutes: Number(ui.dayLength.value),
+  yearLengthMinutes: Number(ui.yearLength.value),
   maxConcurrentLeafFall: Number(ui.fallingLeaves.value),
   physicsEnabled: Boolean(ui.physics.checked),
   showPhysicsColliders: Boolean(ui.physicsDebug.checked),
@@ -4750,6 +5392,564 @@ const state = {
   maxDepth: Number(ui.depth.value),
   seed: Number(ui.seed.value),
 };
+
+const environmentContext = {
+  dayProgress: 0.42,
+  yearProgress: 0.3,
+  daylight: 1,
+  twilight: 0.08,
+  nightFactor: 0,
+  growthMultiplier: 1,
+  effectiveWindStrength: state.windStrength,
+  leafFallPressure: 0.12,
+  leafSenescenceBoost: 0.2,
+  leafRegrowthBoost: 1,
+  weatherType: "clear",
+  weatherSeverity: 0,
+  precipitationIntensity: 0,
+  rainIntensity: 0,
+  snowIntensity: 0,
+  moonProgress: 0.42,
+  moonIllumination: 0.82,
+  moonVisibility: 0.6,
+  moonPhaseName: "waxingGibbous",
+  cloudiness: 0.56,
+  seasonName: "spring",
+  seasonIndex: 1,
+  seasonBlend: 0,
+  seasonGrowth: 1.2,
+  seasonFallPressure: 0.14,
+  seasonSenescence: 0.18,
+  seasonDaylightScale: 1,
+  seasonTintA: SEASON_PROFILES[1].tint,
+  seasonTintB: SEASON_PROFILES[2].tint,
+  sunDirection: new THREE.Vector3(0.55, 0.75, 0.35),
+  moonDirection: new THREE.Vector3(-0.4, 0.45, -0.8),
+};
+const environmentScratch = {
+  skyTop: new THREE.Color(),
+  skyHorizon: new THREE.Color(),
+  skyBottom: new THREE.Color(),
+  sunColor: new THREE.Color(),
+  moonColor: new THREE.Color(),
+  fogColor: new THREE.Color(),
+  seasonTint: new THREE.Color(),
+  hemiSky: new THREE.Color(),
+  hemiGround: new THREE.Color(),
+  keyColor: new THREE.Color(),
+  rimColor: new THREE.Color(),
+  fillColor: new THREE.Color(),
+  ambientColor: new THREE.Color(),
+};
+const ENV_VISUAL_UPDATE_INTERVAL = PERFORMANCE_PROFILE.lowPowerMode ? 1 / 22 : 1 / 34;
+const ENV_STATUS_UPDATE_INTERVAL = PERFORMANCE_PROFILE.lowPowerMode ? 0.35 : 0.24;
+const DEBUG_OVERLAY_UPDATE_INTERVAL = PERFORMANCE_PROFILE.lowPowerMode ? 1 / 10 : 1 / 16;
+const ADAPTIVE_PIXEL_RATIO_MIN = PERFORMANCE_PROFILE.lowPowerMode ? 0.72 : 0.9;
+const ADAPTIVE_PIXEL_RATIO_STEP_DOWN = PERFORMANCE_PROFILE.lowPowerMode ? 0.06 : 0.05;
+const ADAPTIVE_PIXEL_RATIO_STEP_UP = PERFORMANCE_PROFILE.lowPowerMode ? 0.03 : 0.025;
+const ADAPTIVE_PIXEL_RATIO_EVAL_INTERVAL = 0.9;
+const ADAPTIVE_PIXEL_RATIO_SLOW_FRAME_MS = PERFORMANCE_PROFILE.lowPowerMode ? 30 : 26;
+const ADAPTIVE_PIXEL_RATIO_FAST_FRAME_MS = PERFORMANCE_PROFILE.lowPowerMode ? 20 : 16.5;
+let lastEnvironmentVisualUpdateTime = -Infinity;
+let lastEnvironmentStatusUpdateTime = -Infinity;
+let lastDebugOverlayUpdateTime = -Infinity;
+let lastEnvironmentStatusText = "";
+let adaptivePixelRatioTimeAccum = 0;
+let adaptivePixelRatioFrameAccum = 0;
+let lastAdaptivePixelRatioEvalTime = -Infinity;
+
+function getMoonPhaseName(progress) {
+  const phase = fract(progress);
+  if (phase < 0.03 || phase >= 0.97) {
+    return "new";
+  }
+  if (phase < 0.22) {
+    return "waxingCrescent";
+  }
+  if (phase < 0.28) {
+    return "firstQuarter";
+  }
+  if (phase < 0.47) {
+    return "waxingGibbous";
+  }
+  if (phase < 0.53) {
+    return "full";
+  }
+  if (phase < 0.72) {
+    return "waningGibbous";
+  }
+  if (phase < 0.78) {
+    return "lastQuarter";
+  }
+  return "waningCrescent";
+}
+
+function sampleSeasonEnvironment(yearProgress, out) {
+  const profileCount = SEASON_PROFILES.length;
+  const wrapped = fract(yearProgress);
+  const scaled = wrapped * profileCount;
+  const index = Math.floor(scaled) % profileCount;
+  const nextIndex = (index + 1) % profileCount;
+  const blend = smooth01(scaled - Math.floor(scaled));
+  const current = SEASON_PROFILES[index];
+  const next = SEASON_PROFILES[nextIndex];
+
+  out.seasonIndex = index;
+  out.seasonBlend = blend;
+  out.seasonName = blend < 0.5 ? current.name : next.name;
+  out.seasonGrowth = THREE.MathUtils.lerp(current.growth, next.growth, blend);
+  out.seasonFallPressure = THREE.MathUtils.lerp(
+    current.fallPressure,
+    next.fallPressure,
+    blend,
+  );
+  out.seasonSenescence = THREE.MathUtils.lerp(
+    current.senescence,
+    next.senescence,
+    blend,
+  );
+  out.seasonCloudiness = THREE.MathUtils.lerp(
+    current.cloudiness,
+    next.cloudiness,
+    blend,
+  );
+  out.seasonDaylightScale = THREE.MathUtils.lerp(
+    current.daylightScale,
+    next.daylightScale,
+    blend,
+  );
+  out.seasonTintA = current.tint;
+  out.seasonTintB = next.tint;
+}
+
+function evaluateEnvironment(elapsedSeconds, out = environmentContext) {
+  const dayLengthSeconds = Math.max(30, state.dayLengthMinutes * 60);
+  const yearLengthSeconds = Math.max(60, state.yearLengthMinutes * 60);
+
+  out.dayProgress = state.dayNightCycle
+    ? fract(elapsedSeconds / dayLengthSeconds)
+    : 0.42;
+  out.yearProgress = state.seasonsCycle
+    ? fract(elapsedSeconds / yearLengthSeconds)
+    : 0.3;
+
+  sampleSeasonEnvironment(out.yearProgress, out);
+
+  const sunHeight = Math.sin(out.dayProgress * TAU - Math.PI * 0.5);
+  const daylightBase = state.dayNightCycle
+    ? smooth01((sunHeight + 0.12) / 0.9)
+    : 1;
+  out.daylight = THREE.MathUtils.clamp(
+    daylightBase * out.seasonDaylightScale,
+    0,
+    1,
+  );
+  out.nightFactor = 1 - out.daylight;
+  out.twilight = state.dayNightCycle
+    ? smooth01(1 - Math.abs(sunHeight) * 2.25)
+    : 0.08;
+
+  const weatherNoiseA = fbm2(
+    elapsedSeconds * 0.011 + out.yearProgress * 5.1,
+    out.yearProgress * 8.8 + out.seasonIndex * 1.73,
+    907,
+    4,
+  );
+  const weatherNoiseB = fbm2(
+    elapsedSeconds * 0.024 - out.yearProgress * 2.9,
+    out.dayProgress * 6.4 + out.seasonIndex * 3.8,
+    911,
+    3,
+  );
+  const moisture = THREE.MathUtils.clamp(
+    0.33 +
+      out.seasonCloudiness * 0.82 +
+      (weatherNoiseA - 0.5) * 0.84 +
+      (weatherNoiseB - 0.5) * 0.62,
+    0,
+    1.38,
+  );
+  const stormPotential = THREE.MathUtils.clamp((moisture - 0.88) / 0.34, 0, 1);
+  const precipitationBase = THREE.MathUtils.clamp(
+    (moisture - (0.6 - out.seasonCloudiness * 0.15)) / 0.45,
+    0,
+    1,
+  );
+  let precipitationIntensity = precipitationBase * (0.72 + stormPotential * 0.48);
+
+  const seasonColdFactor =
+    out.seasonName === "winter"
+      ? 1
+      : out.seasonName === "autumn"
+        ? 0.44
+        : out.seasonName === "spring"
+          ? 0.18
+          : 0.06;
+  const snowShare = THREE.MathUtils.clamp(
+    seasonColdFactor * (0.78 + out.nightFactor * 0.3) - out.daylight * 0.24,
+    0,
+    1,
+  );
+  out.snowIntensity = precipitationIntensity * snowShare;
+  out.rainIntensity = precipitationIntensity * (1 - snowShare);
+  precipitationIntensity = out.rainIntensity + out.snowIntensity;
+  out.precipitationIntensity = precipitationIntensity;
+
+  const baseCloudiness = THREE.MathUtils.clamp(
+    out.seasonCloudiness * (0.82 + out.twilight * 0.24 + out.nightFactor * 0.12),
+    0.16,
+    1.25,
+  );
+  out.cloudiness = THREE.MathUtils.clamp(
+    baseCloudiness +
+      precipitationIntensity * 0.46 +
+      stormPotential * 0.22 +
+      out.rainIntensity * 0.18,
+    0.18,
+    1.45,
+  );
+
+  if (precipitationIntensity > 0.74 && stormPotential > 0.42 && out.rainIntensity > 0.45) {
+    out.weatherType = "storm";
+    out.weatherSeverity = THREE.MathUtils.clamp(
+      Math.max(precipitationIntensity, stormPotential),
+      0,
+      1,
+    );
+  } else if (out.snowIntensity > 0.08) {
+    out.weatherType = "snow";
+    out.weatherSeverity = THREE.MathUtils.clamp(out.snowIntensity, 0, 1);
+  } else if (out.rainIntensity > 0.08) {
+    out.weatherType = "rain";
+    out.weatherSeverity = THREE.MathUtils.clamp(out.rainIntensity, 0, 1);
+  } else if (out.cloudiness > 0.72) {
+    out.weatherType = "cloudy";
+    out.weatherSeverity = THREE.MathUtils.clamp((out.cloudiness - 0.72) / 0.5, 0, 1);
+  } else {
+    out.weatherType = "clear";
+    out.weatherSeverity = THREE.MathUtils.clamp((0.72 - out.cloudiness) / 0.72, 0, 1);
+  }
+
+  const weatherSunOcclusion = THREE.MathUtils.clamp(
+    out.cloudiness * 0.3 +
+      precipitationIntensity * 0.42 +
+      (out.weatherType === "storm" ? 0.22 : 0),
+    0,
+    0.82,
+  );
+  const growthLightFactor = state.dayNightCycle
+    ? 0.08 + out.daylight * (0.92 - weatherSunOcclusion * 0.36)
+    : 1 - weatherSunOcclusion * 0.18;
+  const hydrationBoost = out.rainIntensity * 0.08 * out.daylight;
+  out.growthMultiplier = THREE.MathUtils.clamp(
+    out.seasonGrowth * (growthLightFactor + hydrationBoost),
+    0.02,
+    1.55,
+  );
+  out.effectiveWindStrength =
+    state.windStrength *
+    THREE.MathUtils.clamp(
+      0.72 +
+        out.daylight * 0.22 +
+        out.cloudiness * 0.22 +
+        stormPotential * 0.56 +
+        out.precipitationIntensity * 0.12,
+      0.52,
+      2.2,
+    );
+
+  out.leafFallPressure = THREE.MathUtils.clamp(
+    out.seasonFallPressure * (0.68 + out.nightFactor * 0.34) +
+      out.precipitationIntensity * 0.2 +
+      stormPotential * 0.26 +
+      out.effectiveWindStrength * 0.03,
+    0,
+    1.22,
+  );
+  out.leafSenescenceBoost = THREE.MathUtils.clamp(
+    out.seasonSenescence * (0.62 + out.nightFactor * 0.36) +
+      out.weatherSeverity * 0.08,
+    0,
+    1.2,
+  );
+  out.leafRegrowthBoost = THREE.MathUtils.clamp(
+    out.seasonGrowth * (0.2 + out.daylight * 0.85),
+    0,
+    1.3,
+  );
+
+  const azimuth = elapsedSeconds * 0.03 + out.yearProgress * TAU * 0.52;
+  const horizontal = Math.sqrt(Math.max(0, 1 - sunHeight * sunHeight));
+  out.sunDirection
+    .set(Math.cos(azimuth) * horizontal, sunHeight, Math.sin(azimuth) * horizontal)
+    .normalize();
+
+  const simulatedDayCount = elapsedSeconds / dayLengthSeconds;
+  out.moonProgress = fract(simulatedDayCount / 29.530588);
+  out.moonIllumination = THREE.MathUtils.clamp(
+    (1 - Math.cos(out.moonProgress * TAU)) * 0.5,
+    0,
+    1,
+  );
+  out.moonPhaseName = getMoonPhaseName(out.moonProgress);
+  const moonHeight = Math.sin((out.dayProgress + 0.5) * TAU - Math.PI * 0.5);
+  const moonHorizontal = Math.sqrt(Math.max(0, 1 - moonHeight * moonHeight));
+  const moonAzimuth =
+    azimuth +
+    Math.PI +
+    Math.sin(elapsedSeconds * 0.004 + out.moonProgress * TAU) * 0.24;
+  out.moonDirection
+    .set(
+      Math.cos(moonAzimuth) * moonHorizontal,
+      moonHeight,
+      Math.sin(moonAzimuth) * moonHorizontal,
+    )
+    .normalize();
+  out.moonVisibility = THREE.MathUtils.clamp(
+    out.nightFactor *
+      (0.18 + out.moonIllumination * 0.82) *
+      (1 - out.cloudiness * 0.34),
+    0,
+    1,
+  );
+
+  return out;
+}
+
+function buildEnvironmentStatusText(environment) {
+  const seasonLabel =
+    SEASON_LABELS[environment.seasonName] || environment.seasonName;
+  const weatherLabel =
+    WEATHER_LABELS[environment.weatherType] || environment.weatherType;
+  const moonLabel =
+    MOON_PHASE_LABELS[environment.moonPhaseName] || environment.moonPhaseName;
+  const dayPercent = Math.round(environment.daylight * 100);
+  return `Entorno: dia ${dayPercent}% · ${seasonLabel} · ${weatherLabel} · ${moonLabel} · crecimiento x${environment.growthMultiplier.toFixed(2)}`;
+}
+
+function updateEnvironmentStatus(environment, force = false) {
+  if (!ui.envStatus) {
+    return;
+  }
+  const nextText = buildEnvironmentStatusText(environment);
+  if (!force && nextText === lastEnvironmentStatusText) {
+    return;
+  }
+  lastEnvironmentStatusText = nextText;
+  ui.envStatus.textContent = nextText;
+}
+
+function applyEnvironmentToScene(environment, elapsedSeconds) {
+  const dayMix = smooth01((environment.daylight - 0.15) / 0.85);
+  const twilightMix = environment.twilight * (1 - dayMix * 0.75);
+  const precipitationMix = THREE.MathUtils.clamp(
+    environment.precipitationIntensity,
+    0,
+    1,
+  );
+  const stormMix = environment.weatherType === "storm"
+    ? THREE.MathUtils.clamp(environment.weatherSeverity, 0, 1)
+    : 0;
+  const weatherDim = THREE.MathUtils.clamp(
+    environment.rainIntensity * 0.42 +
+      environment.snowIntensity * 0.26 +
+      stormMix * 0.24,
+    0,
+    0.8,
+  );
+  const fogDensity =
+    PERFORMANCE_PROFILE.fogDensity *
+    (0.88 +
+      environment.nightFactor * 0.44 +
+      environment.cloudiness * 0.16 +
+      precipitationMix * 0.5 +
+      stormMix * 0.22);
+
+  environmentScratch.seasonTint
+    .copy(environment.seasonTintA)
+    .lerp(environment.seasonTintB, environment.seasonBlend);
+
+  environmentScratch.skyTop
+    .copy(ENV_COLORS.skyTopNight)
+    .lerp(ENV_COLORS.skyTopTwilight, twilightMix)
+    .lerp(ENV_COLORS.skyTopDay, dayMix)
+    .lerp(environmentScratch.seasonTint, 0.08);
+  environmentScratch.skyHorizon
+    .copy(ENV_COLORS.skyHorizonNight)
+    .lerp(ENV_COLORS.skyHorizonTwilight, twilightMix)
+    .lerp(ENV_COLORS.skyHorizonDay, dayMix)
+    .lerp(environmentScratch.seasonTint, 0.1);
+  environmentScratch.skyBottom
+    .copy(ENV_COLORS.skyBottomNight)
+    .lerp(ENV_COLORS.skyBottomTwilight, twilightMix)
+    .lerp(ENV_COLORS.skyBottomDay, dayMix)
+    .lerp(environmentScratch.seasonTint, 0.09);
+  environmentScratch.sunColor
+    .copy(ENV_COLORS.sunNight)
+    .lerp(ENV_COLORS.sunTwilight, twilightMix)
+    .lerp(ENV_COLORS.sunDay, dayMix)
+    .multiplyScalar(1 - weatherDim * 0.22);
+  environmentScratch.moonColor
+    .copy(ENV_COLORS.moonDay)
+    .lerp(ENV_COLORS.moonNight, environment.nightFactor)
+    .lerp(ENV_COLORS.moonSnow, environment.snowIntensity * 0.28);
+  environmentScratch.fogColor
+    .copy(ENV_COLORS.fogNight)
+    .lerp(ENV_COLORS.fogTwilight, twilightMix)
+    .lerp(ENV_COLORS.fogDay, dayMix)
+    .lerp(environmentScratch.seasonTint, 0.13)
+    .lerp(ENV_COLORS.fogRain, precipitationMix * 0.22)
+    .lerp(ENV_COLORS.fogStorm, stormMix * 0.3);
+
+  scene.fog.color.copy(environmentScratch.fogColor);
+  scene.fog.density = fogDensity;
+  scene.background.copy(environmentScratch.fogColor);
+
+  if (skyDome && skyDome.material && skyDome.material.uniforms) {
+    const uniforms = skyDome.material.uniforms;
+    if (uniforms.time) {
+      uniforms.time.value = elapsedSeconds;
+    }
+    if (uniforms.topColor) {
+      uniforms.topColor.value.copy(environmentScratch.skyTop);
+    }
+    if (uniforms.horizonColor) {
+      uniforms.horizonColor.value.copy(environmentScratch.skyHorizon);
+    }
+    if (uniforms.bottomColor) {
+      uniforms.bottomColor.value.copy(environmentScratch.skyBottom);
+    }
+    if (uniforms.sunColor) {
+      uniforms.sunColor.value.copy(environmentScratch.sunColor);
+    }
+    if (uniforms.sunDirection) {
+      uniforms.sunDirection.value.copy(environment.sunDirection);
+    }
+    if (uniforms.moonColor) {
+      uniforms.moonColor.value.copy(environmentScratch.moonColor);
+    }
+    if (uniforms.moonDirection) {
+      uniforms.moonDirection.value.copy(environment.moonDirection);
+    }
+    if (uniforms.moonVisibility) {
+      uniforms.moonVisibility.value = environment.moonVisibility;
+    }
+    if (uniforms.moonPhase) {
+      uniforms.moonPhase.value = environment.moonIllumination;
+    }
+    if (uniforms.cloudAmount) {
+      const cloudBase = PERFORMANCE_PROFILE.lowPowerMode ? 1.02 : 1.16;
+      uniforms.cloudAmount.value =
+        cloudBase *
+        (0.74 +
+          environment.cloudiness * 0.65 +
+          twilightMix * 0.16 +
+          precipitationMix * 0.28 +
+          stormMix * 0.18);
+    }
+  }
+
+  environmentScratch.hemiSky
+    .copy(ENV_COLORS.hemiSkyNight)
+    .lerp(ENV_COLORS.hemiSkyDay, dayMix);
+  environmentScratch.hemiGround
+    .copy(ENV_COLORS.hemiGroundNight)
+    .lerp(ENV_COLORS.hemiGroundDay, dayMix);
+  hemiLight.color.copy(environmentScratch.hemiSky);
+  hemiLight.groundColor.copy(environmentScratch.hemiGround);
+  hemiLight.intensity =
+    LIGHT_BASE_INTENSITY.hemi *
+    (0.16 + dayMix * 0.88 + twilightMix * 0.26) *
+    (1 - weatherDim * 0.2);
+
+  environmentScratch.keyColor
+    .copy(ENV_COLORS.keyNight)
+    .lerp(ENV_COLORS.keyTwilight, twilightMix)
+    .lerp(ENV_COLORS.keyDay, dayMix);
+  keyLight.color.copy(environmentScratch.keyColor);
+  keyLight.intensity =
+    LIGHT_BASE_INTENSITY.key *
+    (0.08 + dayMix * 1.08 + twilightMix * 0.22) *
+    (1 - weatherDim * 0.55);
+  keyLight.position.copy(environment.sunDirection).multiplyScalar(
+    PERFORMANCE_PROFILE.renderDistance * 0.38,
+  );
+  keyLight.position.y = Math.max(0.8, 5 + environment.sunDirection.y * 7.6);
+  keyLight.target.position.set(0, 1.35, 0);
+  keyLight.target.updateMatrixWorld();
+
+  environmentScratch.rimColor
+    .copy(ENV_COLORS.rimNight)
+    .lerp(ENV_COLORS.rimDay, dayMix);
+  rimLight.color.copy(environmentScratch.rimColor);
+  rimLight.intensity =
+    LIGHT_BASE_INTENSITY.rim *
+    (0.2 + twilightMix * 0.6 + dayMix * 0.4) *
+    (1 - weatherDim * 0.24);
+  rimLight.position.set(
+    -environment.sunDirection.x * 6.8 - 1.4,
+    3.2 + dayMix * 2.7,
+    -environment.sunDirection.z * 6.8 - 0.6,
+  );
+
+  environmentScratch.fillColor
+    .copy(ENV_COLORS.fillNight)
+    .lerp(ENV_COLORS.fillDay, dayMix);
+  fillLight.color.copy(environmentScratch.fillColor);
+  fillLight.intensity =
+    LIGHT_BASE_INTENSITY.fill *
+    (0.3 + dayMix * 0.66 + environment.nightFactor * 0.18) *
+    (1 - weatherDim * 0.3);
+  fillLight.position.set(
+    -environment.sunDirection.x * 3.8 - 2.5,
+    2.9 + dayMix * 2.3,
+    environment.sunDirection.z * 3.8 + 4.4,
+  );
+
+  environmentScratch.ambientColor
+    .copy(ENV_COLORS.ambientNight)
+    .lerp(ENV_COLORS.ambientDay, dayMix);
+  ambientLift.color.copy(environmentScratch.ambientColor);
+  ambientLift.intensity =
+    LIGHT_BASE_INTENSITY.ambient *
+    (0.2 + dayMix * 0.65 + environment.nightFactor * 0.3) *
+    (1 - weatherDim * 0.16);
+
+  renderer.toneMappingExposure =
+    PERFORMANCE_PROFILE.toneExposure *
+    (0.82 + dayMix * 0.28 + twilightMix * 0.06) *
+    (1 - weatherDim * 0.14);
+
+  if (groundContactShadow && groundContactShadow.material) {
+    groundContactShadow.material.opacity = THREE.MathUtils.clamp(
+      (0.12 + dayMix * 0.32) * (1 - precipitationMix * 0.3),
+      0.1,
+      0.42,
+    );
+  }
+
+  if (atmosphereParticles && atmosphereParticles.material) {
+    const atmosphereBaseOpacity = PERFORMANCE_PROFILE.lowPowerMode ? 0.11 : 0.16;
+    atmosphereParticles.material.opacity = THREE.MathUtils.clamp(
+      atmosphereBaseOpacity *
+        (0.34 + dayMix * 0.75 + twilightMix * 0.22) *
+        (1 - precipitationMix * 0.45),
+      0.03,
+      0.3,
+    );
+  }
+
+  if (distantMountainLayers.length > 0) {
+    for (let i = 0; i < distantMountainLayers.length; i += 1) {
+      const layer = distantMountainLayers[i];
+      layer.material.opacity = THREE.MathUtils.clamp(
+        layer.baseOpacity * (0.68 + dayMix * 0.26 + twilightMix * 0.08),
+        0.15,
+        1,
+      );
+    }
+  }
+}
 
 const mobileUiQuery = window.matchMedia("(max-width: 760px)");
 let uiPanelCollapsed = mobileUiQuery.matches;
@@ -4853,6 +6053,8 @@ function syncOutputs() {
   ui.growthValue.textContent = Number(state.age).toFixed(3);
   ui.growthSpeedValue.textContent = state.growthSpeed.toFixed(2);
   ui.windValue.textContent = state.windStrength.toFixed(2);
+  ui.dayLengthValue.textContent = state.dayLengthMinutes.toFixed(1);
+  ui.yearLengthValue.textContent = state.yearLengthMinutes.toFixed(1);
   ui.fallingLeavesValue.textContent = String(state.maxConcurrentLeafFall);
   ui.branchingValue.textContent = state.branching.toFixed(2);
   ui.leafDensityValue.textContent = state.leafDensity.toFixed(2);
@@ -4860,6 +6062,7 @@ function syncOutputs() {
   ui.branchSagValue.textContent = state.branchSag.toFixed(2);
   ui.branchCollisionValue.textContent = state.branchCollision.toFixed(2);
   ui.depthValue.textContent = String(state.maxDepth);
+  updateEnvironmentStatus(environmentContext, true);
 }
 
 function rebuildPlant() {
@@ -4919,6 +6122,26 @@ ui.growthSpeed.addEventListener("input", () => {
 
 ui.wind.addEventListener("input", () => {
   state.windStrength = Number(ui.wind.value);
+  syncOutputs();
+});
+
+ui.dayNightCycle.addEventListener("change", () => {
+  state.dayNightCycle = ui.dayNightCycle.checked;
+  syncOutputs();
+});
+
+ui.seasonsCycle.addEventListener("change", () => {
+  state.seasonsCycle = ui.seasonsCycle.checked;
+  syncOutputs();
+});
+
+ui.dayLength.addEventListener("input", () => {
+  state.dayLengthMinutes = Number(ui.dayLength.value);
+  syncOutputs();
+});
+
+ui.yearLength.addEventListener("input", () => {
+  state.yearLengthMinutes = Number(ui.yearLength.value);
   syncOutputs();
 });
 
@@ -5062,9 +6285,27 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
   const elapsed = clock.elapsedTime;
+  const environment = evaluateEnvironment(elapsed);
+
+  if (
+    elapsed - lastEnvironmentVisualUpdateTime >= ENV_VISUAL_UPDATE_INTERVAL
+  ) {
+    applyEnvironmentToScene(environment, elapsed);
+    lastEnvironmentVisualUpdateTime = elapsed;
+  }
+
+  if (
+    elapsed - lastEnvironmentStatusUpdateTime >= ENV_STATUS_UPDATE_INTERVAL
+  ) {
+    updateEnvironmentStatus(environment);
+    lastEnvironmentStatusUpdateTime = elapsed;
+  }
 
   if (state.autoGrow) {
-    state.age = Math.min(1, state.age + dt * state.growthSpeed);
+    state.age = Math.min(
+      1,
+      state.age + dt * state.growthSpeed * environment.growthMultiplier,
+    );
     ui.growth.value = state.age.toFixed(3);
     if (state.age >= 1) {
       state.autoGrow = false;
@@ -5074,25 +6315,63 @@ function animate() {
   }
 
   if (plant) {
-    plant.update(elapsed, state.age, state.windStrength);
+    plant.update(
+      elapsed,
+      state.age,
+      environment.effectiveWindStrength,
+      environment,
+    );
   }
 
   if (atmosphereParticles) {
-    atmosphereParticles.rotation.y = elapsed * 0.02;
+    atmosphereParticles.rotation.y =
+      elapsed * (0.015 + environment.effectiveWindStrength * 0.004);
     atmosphereParticles.position.y = Math.sin(elapsed * 0.15) * 0.04;
+  }
+  if (weatherPrecipitation) {
+    weatherPrecipitation.update(dt, elapsed, environment, camera);
   }
   if (skyDome) {
     skyDome.position.copy(camera.position);
-    if (
-      skyDome.material &&
-      skyDome.material.uniforms &&
-      skyDome.material.uniforms.time
-    ) {
-      skyDome.material.uniforms.time.value = elapsed;
-    }
   }
 
-  physicsDebugOverlay.update(physicsEngine);
+  if (
+    physicsDebugOverlay.enabled &&
+    elapsed - lastDebugOverlayUpdateTime >= DEBUG_OVERLAY_UPDATE_INTERVAL
+  ) {
+    physicsDebugOverlay.update(physicsEngine);
+    lastDebugOverlayUpdateTime = elapsed;
+  }
+
+  adaptivePixelRatioTimeAccum += dt;
+  adaptivePixelRatioFrameAccum += 1;
+  if (
+    elapsed - lastAdaptivePixelRatioEvalTime >= ADAPTIVE_PIXEL_RATIO_EVAL_INTERVAL &&
+    adaptivePixelRatioFrameAccum >= 12
+  ) {
+    const averageFrameMs =
+      (adaptivePixelRatioTimeAccum / adaptivePixelRatioFrameAccum) * 1000;
+    let nextPixelRatio = adaptivePixelRatio;
+    if (averageFrameMs > ADAPTIVE_PIXEL_RATIO_SLOW_FRAME_MS) {
+      nextPixelRatio = Math.max(
+        ADAPTIVE_PIXEL_RATIO_MIN,
+        adaptivePixelRatio - ADAPTIVE_PIXEL_RATIO_STEP_DOWN,
+      );
+    } else if (averageFrameMs < ADAPTIVE_PIXEL_RATIO_FAST_FRAME_MS) {
+      nextPixelRatio = Math.min(
+        maxAdaptivePixelRatio,
+        adaptivePixelRatio + ADAPTIVE_PIXEL_RATIO_STEP_UP,
+      );
+    }
+    if (Math.abs(nextPixelRatio - adaptivePixelRatio) > 0.001) {
+      adaptivePixelRatio = nextPixelRatio;
+      renderer.setPixelRatio(adaptivePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight, false);
+    }
+    adaptivePixelRatioTimeAccum = 0;
+    adaptivePixelRatioFrameAccum = 0;
+    lastAdaptivePixelRatioEvalTime = elapsed;
+  }
 
   controls.update();
   renderer.render(scene, camera);
@@ -5104,10 +6383,18 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, PERFORMANCE_PROFILE.pixelRatioCap));
+  maxAdaptivePixelRatio = Math.min(
+    window.devicePixelRatio || 1,
+    PERFORMANCE_PROFILE.pixelRatioCap,
+  );
+  adaptivePixelRatio = Math.min(adaptivePixelRatio, maxAdaptivePixelRatio);
+  renderer.setPixelRatio(adaptivePixelRatio);
 });
 
 function disposeVisualAssets() {
+  if (weatherPrecipitation) {
+    weatherPrecipitation.dispose();
+  }
   if (atmosphereParticles) {
     scene.remove(atmosphereParticles);
     if (atmosphereParticles.geometry) {

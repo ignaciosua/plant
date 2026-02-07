@@ -44,6 +44,30 @@
         <output id="windValue">0.65</output>
       </label>
 
+      <label class="control row">
+        <span>Day/Night Cycle</span>
+        <input id="dayNightCycle" type="checkbox" checked />
+      </label>
+
+      <label class="control row">
+        <span>Season Cycle</span>
+        <input id="seasonsCycle" type="checkbox" checked />
+      </label>
+
+      <label class="control">
+        <span>Day Length (min)</span>
+        <input id="dayLength" type="range" min="0.5" max="8" step="0.1" value="2.4" />
+        <output id="dayLengthValue">2.4</output>
+      </label>
+
+      <label class="control">
+        <span>Year Length (min)</span>
+        <input id="yearLength" type="range" min="1" max="30" step="0.5" value="8" />
+        <output id="yearLengthValue">8.0</output>
+      </label>
+
+      <p id="envStatus" class="status">Environment: day 50%, spring</p>
+
       <label class="control">
         <span>Falling Leaves</span>
         <input id="fallingLeaves" type="range" min="0" max="15" step="1" value="12" />
