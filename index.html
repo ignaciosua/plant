@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Plant Simulator</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.1/build/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <canvas id="sim"></canvas>
+
+    <aside id="ui">
+      <h1>Plant Growth Lab</h1>
+      <p class="subtitle">Real-time procedural 3D plant simulation</p>
+
+      <label class="control">
+        <span>Growth Stage</span>
+        <input id="growth" type="range" min="0" max="1" step="0.001" value="0" />
+        <output id="growthValue">0.000</output>
+      </label>
+
+      <label class="control row">
+        <span>Auto Grow</span>
+        <input id="autoGrow" type="checkbox" checked />
+      </label>
+
+      <label class="control">
+        <span>Growth Speed</span>
+        <input id="growthSpeed" type="range" min="0.02" max="0.7" step="0.01" value="0.16" />
+        <output id="growthSpeedValue">0.16</output>
+      </label>
+
+      <label class="control">
+        <span>Wind Strength</span>
+        <input id="wind" type="range" min="0" max="2" step="0.01" value="0.65" />
+        <output id="windValue">0.65</output>
+      </label>
+
+      <label class="control">
+        <span>Branching</span>
+        <input id="branching" type="range" min="0.1" max="1.3" step="0.01" value="0.9" />
+        <output id="branchingValue">0.90</output>
+      </label>
+
+      <label class="control">
+        <span>Leaf Density</span>
+        <input id="leafDensity" type="range" min="0.15" max="1.5" step="0.01" value="1.28" />
+        <output id="leafDensityValue">1.28</output>
+      </label>
+
+      <label class="control">
+        <span>Branch Depth</span>
+        <input id="depth" type="range" min="2" max="8" step="1" value="7" />
+        <output id="depthValue">7</output>
+      </label>
+
+      <label class="control">
+        <span>Seed</span>
+        <input id="seed" type="number" min="1" max="999999" step="1" value="82631" />
+      </label>
+
+      <div class="actions">
+        <button id="regenerate">Regenerate</button>
+        <button id="randomize">Random Seed</button>
+      </div>
+
+      <p class="hint">Mouse: drag to orbit, wheel to zoom, right-drag to pan.</p>
+    </aside>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
