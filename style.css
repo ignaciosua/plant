@@ -38,6 +38,16 @@ body {
   display: block;
 }
 
+#cinematicOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, #ffffff00 46%, #1f2f2220 100%),
+    linear-gradient(180deg, #e0edf033 0%, #fffff000 34%, #d5e5d01a 78%, #9aac8f2b 100%);
+}
+
 #ui {
   position: fixed;
   top: 1rem;
